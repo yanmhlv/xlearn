@@ -19,9 +19,9 @@
 #
 # $> make install
 #
-project ("xLearn")
+cmake_minimum_required(VERSION 3.10)
 
-cmake_minimum_required(VERSION 2.8)
+project ("xLearn")
 
 #-------------------------------------------------------------------------------
 # Take almost all warnings;
