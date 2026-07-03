@@ -27,11 +27,11 @@ project ("xLearn")
 # Take almost all warnings;
 # Do not generate debug symbols;
 # Optimization level 3;
-# Using c++11;
+# Using c++14;
 # Optimization on architecture
 #-------------------------------------------------------------------------------
 if(NOT WIN32)
-add_definitions("-Wall -Wno-sign-compare -O3 -std=c++11 
+add_definitions("-Wall -Wno-sign-compare -O3 -std=c++14
 -march=native -Wno-strict-aliasing -Wno-comment")
 else(WIN32)
 add_definitions("/WX- /MT")
