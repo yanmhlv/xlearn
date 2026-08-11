@@ -14,12 +14,11 @@
 
 # coding: utf-8
 
-import os, ctypes
+import numpy as np
 from numpy import ndarray
-from .base import DataFrame, Series  
-import numpy as np 
-from .base import _LIB, XLearnHandle
-from .base import _check_call, c_str
+
+from ._core import DMatrix as CoreDMatrix
+from .base import DataFrame, Series
 
 # This class is the xLearn core data
 class DMatrix(object):
@@ -35,13 +34,13 @@ class DMatrix(object):
         Note: we only do roughly check, and do detail check in true work function.
         """
 
-        self.__handle = ctypes.c_void_p()
+        self.__handle = None
         if (isinstance(data, ndarray) or isinstance(data, DataFrame)):
             self._init_from_npy2d(data, label, field_map)
         else:
             raise ValueError('Input data must be numpy.ndarray or pandas.DataFrame')
-    
-    # TODO(etveritas): support init DMatrix from other data type in memory, 
+
+    # TODO(etveritas): support init DMatrix from other data type in memory,
     # and unite init DMatrix from file.
 
     # we now, only define the function for init DMatrix from NumPy 2D and pandas DataFrame.
@@ -56,10 +55,9 @@ class DMatrix(object):
         if isinstance(mat, DataFrame):
             mat = mat.values
 
-        data = np.array(mat.reshape(mat.size), copy=False, dtype=np.float32)
-        data_ptr = data.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
-        label_ptr = None
-        field_ptr = None
+        data = np.ascontiguousarray(mat, dtype=np.float32)
+        labels = None
+        fields = None
         if label is not None:
             if isinstance(label, DataFrame):
                 label = label.values
@@ -75,8 +73,7 @@ class DMatrix(object):
                     raise ValueError('Input numpy.ndarray of label must be 1 dimensional or 2 dimensional with one dimensional is 1')
                 if (label.size != mat.shape[0]):
                     raise ValueError('Input label must has same elements as the data lines')
-                labels = np.array(label.reshape(label.size), copy=False, dtype=np.float32)
-                label_ptr = labels.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+                labels = np.ascontiguousarray(label.reshape(label.size), dtype=np.float32)
             else:
                 raise ValueError('Input label must be numpy.ndarray')
 
@@ -90,27 +87,16 @@ class DMatrix(object):
             if isinstance(field_map, ndarray):
                 if (len(field_map.shape) > 2):
                     raise ValueError('Input numpy.ndarray of label must be 1 dimensional or 2 dimensional with one dimensional is 1')
-                if (len(field_map.shape) == 2) and (field_map.shape[0] != 1) and (label.shape[1] != 1):
+                if (len(field_map.shape) == 2) and (field_map.shape[0] != 1) and (field_map.shape[1] != 1):
                     raise ValueError('Input numpy.ndarray of field_map must be 1 dimensional or 2 dimensional with the one dimensional is 1')
                 if (field_map.size != mat.shape[1]):
                     raise ValueError('Input field_map must has same elements as the data columns')
-                fields = np.array(field_map.reshape(field_map.size), copy=False, dtype=np.int32)
-                field_ptr = fields.ctypes.data_as(ctypes.POINTER(ctypes.c_uint))
+                fields = np.ascontiguousarray(field_map.reshape(field_map.size), dtype=np.uint32)
             else:
                 raise ValueError('Input of field_map must numpy.ndarray')
 
-        _check_call(_LIB.XlearnCreateDataFromMat(data_ptr,
-                                                 ctypes.c_uint64(mat.shape[0]),
-                                                 ctypes.c_uint64(mat.shape[1]),
-                                                 label_ptr,
-                                                 field_ptr,
-                                                 ctypes.byref(self.__handle)))
+        self.__handle = CoreDMatrix(data, labels, fields)
 
     @property
     def handle(self):
         return self.__handle
-
-    # release the resource of DMatrix
-    def __del__(self):
-        _check_call(_LIB.XlearnDataFree(ctypes.byref(self.__handle)))
-        self.__handle = None

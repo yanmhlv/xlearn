@@ -1,0 +1,39 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.4"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "xlearn"
+dynamic = ["version"]
+description = "xLearn Python Package"
+readme = "python-package/README.rst"
+requires-python = ">=3.9"
+maintainers = [{name = "Chao Ma", email = "mctt90@gmail.com"}]
+license = "Apache-2.0"
+dependencies = ["numpy>=1.22"]
+
+[project.optional-dependencies]
+sklearn = ["scikit-learn"]
+
+[project.urls]
+Homepage = "https://github.com/aksnzhy/xlearn"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["python-package/xlearn"]
+# nanobind builds against the stable ABI from 3.12 on, so one wheel covers
+# every later Python. Older ones still get a wheel each.
+wheel.py-api = "cp312"
+
+# A wheel carries no tests, and has to run on machines other than the one that
+# built it.
+[tool.scikit-build.cmake.define]
+XLEARN_BUILD_PYTHON = "ON"
+XLEARN_BUILD_TESTS = "OFF"
+XLEARN_NATIVE_ARCH = "OFF"
+
+[tool.scikit-build.metadata.version]
+provider = "scikit_build_core.metadata.regex"
+input = "python-package/xlearn/VERSION"
+regex = "(?P<value>.+)"
