@@ -60,11 +60,11 @@ This build method is optional for Build from Source Code, if you already use met
 
 We support an Visual Studio(vs) solution for users, it's in the directory ``windows`` which is in root of xLearn project. 
 
-There are three vs project in this solution: ``xlearn_train``, ``xlearn_test``, ``xlearn_api``, respectively relation to build executable train,predict entry program and DLL(dynamic link library) API for windows. 
+There are two vs project in this solution: ``xlearn_train`` and ``xlearn_test``, respectively relation to build executable train and predict entry program.
 
 Users should make sure that your vs platform toolset is greater than v141(It works well if you use vs2017).
 
-**Note:** Files(both executable file and DLL) compiling from this solution is different from cmake solution, because of different structure.
+**Note:** Files compiling from this solution is different from cmake solution, because of different structure.
 
 Install Python Package
 =======================
