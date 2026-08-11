@@ -34,6 +34,10 @@ namespace xLearn {
 //------------------------------------------------------------------------------
 class FFMScore : public Score {
 public:
+ // One row's usable features, with the address arithmetic each takes part in
+ // resolved once. Defined in the .cc, beside the kernels that walk it.
+ struct Term;
+
  // Constructor and Destructor
  FFMScore() { }
  ~FFMScore() { }
@@ -51,31 +55,46 @@ public:
                real_t pg,
                real_t norm = 1.0);
 
+ // Scoring resolves the row into terms and the gradient wants exactly those,
+ // over latent blocks the linear update cannot have moved -- so the split path
+ // resolves them a second time for nothing. That measured 7% of an epoch.
+ bool PrefersFusedStep() const { return true; }
+
+ real_t Step(RowRef row,
+             Model& model,
+             real_t norm,
+             PartialGrad partial_grad,
+             void* context);
+
  protected:
+  // Dispatch the latent update on the optimizer, for a row already resolved.
+  void latent_grad(RowRef row,
+                   const std::vector<Term>& terms,
+                   Model& model,
+                   real_t pg,
+                   real_t norm);
+
   // Calculate gradient and update model using sgd
   void calc_grad_sgd(RowRef row,
+                     const std::vector<Term>& terms,
                      Model& model,
                      real_t pg,
-                     real_t norm = 1.0);
+                     real_t norm);
 
   // Calculate gradient and update model using adagrad
   void calc_grad_adagrad(RowRef row,
-  	                     Model& model,
-  	                     real_t pg,
-  	                     real_t norm = 1.0);
+                         const std::vector<Term>& terms,
+                         Model& model,
+                         real_t pg,
+                         real_t norm);
 
   // Calculate gradient and update model using ftrl
   void calc_grad_ftrl(RowRef row,
-  	                  Model& model,
-  	                  real_t pg,
-  	                  real_t norm = 1.0);
+                      const std::vector<Term>& terms,
+                      Model& model,
+                      real_t pg,
+                      real_t norm);
 
- private:
-  real_t* comp_res1 = nullptr;
-  real_t* comp_res2 = nullptr;
-  real_t* comp_z_lt_zero = nullptr;
-  real_t* comp_z_gt_zero = nullptr;
-  
  private:
   DISALLOW_COPY_AND_ASSIGN(FFMScore);
 };

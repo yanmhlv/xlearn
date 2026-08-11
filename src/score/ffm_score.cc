@@ -27,8 +27,6 @@ This file is the implementation of FFMScore class.
 
 namespace xLearn {
 
-namespace {
-
 //------------------------------------------------------------------------------
 // One usable feature of a row, with its share of the address arithmetic
 // already done. Every function below walks the row as pairs, so it is
@@ -36,19 +34,29 @@ namespace {
 // multiply are not: resolved once here, they are saved from each of the
 // pairs the feature takes part in.
 //------------------------------------------------------------------------------
-struct Term {
+struct FFMScore::Term {
   real_t* base;       // GetParameter_v() + feat_id * align1
   index_t field_off;  // field_id * align0
   real_t val;
 };
 
-// The usable entries of row, in order. Storage is reused between calls on the
-// same thread, which is what the lock-free trainers need: they share a model
-// but never a row.
+namespace {
+
+typedef FFMScore::Term Term;
+
+// Where the terms live between the two halves of a step. Reused between calls
+// on the same thread, which is what the lock-free trainers need: they share a
+// model but never a row.
+std::vector<Term>& TermStorage() {
+  static thread_local std::vector<Term> terms;
+  return terms;
+}
+
+// The usable entries of row, in order.
 const std::vector<Term>& RowTerms(RowRef row,
                                   Model& model,
                                   index_t align0) {
-  static thread_local std::vector<Term> terms;
+  std::vector<Term>& terms = TermStorage();
   terms.clear();
   real_t* v = model.GetParameter_v();
   index_t num_feat = model.GetNumFeature();
@@ -63,6 +71,10 @@ const std::vector<Term>& RowTerms(RowRef row,
   }
   return terms;
 }
+
+// The terms as the last RowTerms() call on this thread left them. Step()
+// reaches the row CalcScore() just resolved rather than resolving it again.
+const std::vector<Term>& FilledTerms() { return TermStorage(); }
 
 // Whether the latent planes can be walked eight lanes at a time -- the same
 // rule FM uses, see WideLanes() there.
@@ -110,6 +122,13 @@ real_t LatentScore(const std::vector<Term>& terms,
       }
       // A short K leaves only this tail, and with no second chain to hide it
       // a fused multiply-add would just lengthen the one accumulator.
+      //
+      // Spreading the chains over pairs instead, so that a short K still gets
+      // four of them, is the obvious next move and it does not pay: it needs
+      // four pairs of weight pointers live at once, which x86-64's sixteen
+      // vector registers cannot hold, and measured 260ms against this 190 at
+      // k=8. Four lanes and thirty-two registers reverse that -- the shape
+      // here is the one that suits the narrower register file.
       for (; d < aligned_k; d += kStep) {
         total0 = total0 + Vec<N>::Load(w1 + d) * Vec<N>::Load(w2 + d) * val;
       }
@@ -297,27 +316,56 @@ real_t FFMScore::CalcScore(RowRef row,
   return sum_v + sum_w;
 }
 
+// Score and update in one pass.
+//
+// CalcScore() leaves the row resolved into terms and the gradient needs
+// exactly those, over latent blocks the linear update below cannot have
+// moved -- so the resolution the split path repeats is skipped here.
+real_t FFMScore::Step(RowRef row,
+                      Model& model,
+                      real_t norm,
+                      PartialGrad partial_grad,
+                      void* context) {
+  real_t loss = 0;
+  real_t pred = this->CalcScore(row, model, norm);
+  real_t pg = partial_grad(pred, context, &loss);
+  this->latent_grad(row, FilledTerms(), model, pg, norm);
+  return loss;
+}
+
 // Calculate gradient and update current model.
 // Using the SIMD to accelerate vector operation.
 void FFMScore::CalcGrad(RowRef row,
                         Model& model,
                         real_t pg,
                         real_t norm) {
+  index_t align0 = model.GetAuxiliarySize() * model.get_aligned_k();
+  this->latent_grad(row, RowTerms(row, model, align0), model, pg, norm);
+}
+
+// Dispatch on the optimizer. The linear and bias terms are updated inside
+// each, because their update rule differs the same way.
+void FFMScore::latent_grad(RowRef row,
+                           const std::vector<Term>& terms,
+                           Model& model,
+                           real_t pg,
+                           real_t norm) {
   switch (opt_) {
     case OptType::kSgd:
-      this->calc_grad_sgd(row, model, pg, norm);
+      this->calc_grad_sgd(row, terms, model, pg, norm);
       break;
     case OptType::kAdaGrad:
-      this->calc_grad_adagrad(row, model, pg, norm);
+      this->calc_grad_adagrad(row, terms, model, pg, norm);
       break;
     case OptType::kFtrl:
-      this->calc_grad_ftrl(row, model, pg, norm);
+      this->calc_grad_ftrl(row, terms, model, pg, norm);
       break;
   }
 }
 
 // Calculate gradient and update current model using sgd
 void FFMScore::calc_grad_sgd(RowRef row,
+                               const std::vector<Term>& terms,
                              Model& model,
                              real_t pg,
                              real_t norm) {
@@ -344,8 +392,6 @@ void FFMScore::calc_grad_sgd(RowRef row,
    *  latent factor                                        *
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
-  const std::vector<Term>& terms =
-      RowTerms(row, model, model.GetAuxiliarySize() * aligned_k);
   if (WideLanes(aligned_k)) {
     LatentSgd<8>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
   } else {
@@ -355,6 +401,7 @@ void FFMScore::calc_grad_sgd(RowRef row,
 
 // Calculate gradient and update current model using adagrad
 void FFMScore::calc_grad_adagrad(RowRef row,
+                               const std::vector<Term>& terms,
                                  Model& model,
                                  real_t pg,
                                  real_t norm) {
@@ -386,8 +433,6 @@ void FFMScore::calc_grad_adagrad(RowRef row,
    *  latent factor                                        *
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
-  const std::vector<Term>& terms =
-      RowTerms(row, model, model.GetAuxiliarySize() * aligned_k);
   if (WideLanes(aligned_k)) {
     LatentAdagrad<8>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
   } else {
@@ -397,6 +442,7 @@ void FFMScore::calc_grad_adagrad(RowRef row,
 
 // Calculate gradient and update current model using ftrl
 void FFMScore::calc_grad_ftrl(RowRef row,
+                               const std::vector<Term>& terms,
                               Model& model,
                               real_t pg,
                               real_t norm) {
@@ -449,8 +495,6 @@ void FFMScore::calc_grad_ftrl(RowRef row,
    *  latent factor                                        *
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
-  const std::vector<Term>& terms =
-      RowTerms(row, model, model.GetAuxiliarySize() * aligned_k);
   if (WideLanes(aligned_k)) {
     LatentFtrl<8>(terms, aligned_k, pg, norm,
                   inv_alpha_, beta_, lambda_1_, lambda_2_);
