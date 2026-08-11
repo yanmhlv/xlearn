@@ -48,7 +48,7 @@ class Score {
  public:
   // Which optimizer CalcGrad dispatches to. Resolved once in Initialize:
   // matching the name on every row costs a string compare per example.
-  enum OptType {
+  enum class OptType {
     kSgd,
     kAdaGrad,
     kFtrl
@@ -65,20 +65,22 @@ class Score {
                           real_t beta,
                           real_t lambda_1,
                           real_t lambda_2,
-                          std::string& opt_type) {
+                          const std::string& opt_type) {
     learning_rate_ = learning_rate;
     regu_lambda_ = regu_lambda;
     alpha_ = alpha;
     beta_ = beta;
     lambda_1_ = lambda_1;
     lambda_2_ = lambda_2;
-    opt_type_ = opt_type;
+    // Every ftrl step scales by 1/alpha. Dividing a vector by a scalar that
+    // never changes keeps the divider busy for what one reciprocal settles.
+    inv_alpha_ = 1.0 / alpha;
     if (opt_type.compare("sgd") == 0) {
-      opt_ = kSgd;
+      opt_ = OptType::kSgd;
     } else if (opt_type.compare("adagrad") == 0) {
-      opt_ = kAdaGrad;
+      opt_ = OptType::kAdaGrad;
     } else if (opt_type.compare("ftrl") == 0) {
-      opt_ = kFtrl;
+      opt_ = OptType::kFtrl;
     } else {
       LOG(FATAL) << "Unknow optimization method: " << opt_type;
     }
@@ -104,7 +106,7 @@ class Score {
   real_t beta_;
   real_t lambda_1_;
   real_t lambda_2_;
-  std::string opt_type_;
+  real_t inv_alpha_;
   OptType opt_;
 
  private:
