@@ -214,7 +214,7 @@ void print_row(const std::vector<T> &column, const std::vector<int> &width) {
     std::cout.width(width[i]);
     std::cout << column[i];
   }
-  std::cout << "\n";
+  std::cout << std::endl;
 }
 
 } // namespace Color
