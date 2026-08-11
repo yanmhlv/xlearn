@@ -1,8 +1,7 @@
 # nanobind ships its CMake config inside the Python package, which the build
 # backend installs into the isolated build environment.
-find_package(Python 3.9 REQUIRED
-  COMPONENTS Interpreter Development.Module
-  OPTIONAL_COMPONENTS Development.SABIModule)
+find_package(Python 3.12 REQUIRED
+  COMPONENTS Interpreter Development.Module Development.SABIModule)
 execute_process(
   COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
   OUTPUT_STRIP_TRAILING_WHITESPACE

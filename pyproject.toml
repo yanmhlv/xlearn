@@ -7,10 +7,10 @@ name = "xlearn"
 dynamic = ["version"]
 description = "xLearn Python Package"
 readme = "python-package/README.rst"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 maintainers = [{name = "Chao Ma", email = "mctt90@gmail.com"}]
 license = "Apache-2.0"
-dependencies = ["numpy>=1.22"]
+dependencies = ["numpy>=2.2"]
 
 [project.optional-dependencies]
 sklearn = ["scikit-learn"]
@@ -22,8 +22,8 @@ Homepage = "https://github.com/aksnzhy/xlearn"
 minimum-version = "0.10"
 build-dir = "build/{wheel_tag}"
 wheel.packages = ["python-package/xlearn"]
-# nanobind builds against the stable ABI from 3.12 on, so one wheel covers
-# every later Python. Older ones still get a wheel each.
+# nanobind builds against the stable ABI from 3.12 on, which is the oldest
+# Python we support, so a single wheel covers all of them.
 wheel.py-api = "cp312"
 
 # A wheel carries no tests, and has to run on machines other than the one that

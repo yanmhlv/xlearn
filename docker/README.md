@@ -1,5 +1,5 @@
 ## Introduction
-A tiny Dockerfile for building an image for `xlearn` in Python 3.6. 
+A tiny Dockerfile for building an image for `xlearn` in Python 3.12. 
 
 ## Prerequisites
 * Docker 
