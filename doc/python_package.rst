@@ -585,7 +585,17 @@ demo data (``house_price_train.txt`` and ``house_price_test.txt``) from the path
     # if no result out path setted, we return res as numpy.ndarray
     res = fm_model.predict("./model_dm.out")
 
-**Note:** Train from DMatrix is not support cross validation now, and we will add this feature soon later. 
+``DMatrix`` accepts a NumPy 2D array, a pandas ``DataFrame``, or a SciPy sparse
+matrix. A sparse matrix is the one to reach for on wide CTR data: only the
+non-zero features are stored, so a matrix that is one percent dense costs a
+hundredth of the memory, and a zero feature contributes nothing to the model
+either way. ::
+
+    from scipy.sparse import csr_matrix
+
+    xdm_train = xl.DMatrix(csr_matrix(X_train), y_train)
+
+**Note:** Train from DMatrix is not support cross validation now, and we will add this feature soon later.
 
 Scikit-learn API for xLearn
 ----------------------------------------

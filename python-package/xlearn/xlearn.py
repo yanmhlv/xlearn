@@ -13,6 +13,10 @@
 # limitations under the License.
 
 # coding: utf-8
+from typing import Any, Optional, Union
+
+from numpy import ndarray
+
 from ._core import Model, hello
 from .data import DMatrix
 
@@ -20,17 +24,19 @@ __all__ = ['XLearn', 'DMatrix', 'create_linear', 'create_fm', 'create_ffm',
            'hello']
 
 # Every hyper-parameter the 'param' dict accepts is a property of the same
-# name on the core model.
+# name on the core model, except for the one whose name Python reserves.
 _PARAM_KEYS = frozenset((
     'task', 'metric', 'opt', 'log', 'lr', 'k', 'lambda', 'init', 'epoch',
     'fold', 'alpha', 'beta', 'lambda_1', 'lambda_2', 'nthread', 'block_size',
     'stop_window', 'seed',
 ))
 
+_PARAM_ALIASES = {'lambda': 'regu_lambda'}
+
 class XLearn(object):
     """XLearn is the core interface used by python API."""
 
-    def __init__(self, handle):
+    def __init__(self, handle: Model) -> None:
         """Initalizes a new XLearn
 
         Parameters
@@ -41,7 +47,7 @@ class XLearn(object):
         assert isinstance(handle, Model)
         self.handle = handle
 
-    def _set_Param(self, param):
+    def _set_Param(self, param: dict[str, Any]) -> None:
         """Set hyper-parameter for xlearn handle
 
         Parameters
@@ -52,14 +58,14 @@ class XLearn(object):
         for (key, value) in param.items():
             if key not in _PARAM_KEYS:
                 raise Exception("Invalid key!", key)
-            setattr(self.handle, key, value)
+            setattr(self.handle, _PARAM_ALIASES.get(key, key), value)
 
-    def show(self):
+    def show(self) -> None:
         """Show model information
         """
         self.handle.show()
 
-    def setTrain(self, train_path):
+    def setTrain(self, train_path: Union[str, DMatrix]) -> None:
         """Set file path of training data.
 
         Parameters
@@ -74,7 +80,7 @@ class XLearn(object):
         else:
             raise Exception("Invalid train.Can be test file path or xLearn DMatrix", type(train_path))
 
-    def setTest(self, test_path):
+    def setTest(self, test_path: Union[str, DMatrix]) -> None:
         """Set file path of test data.
 
         Parameters
@@ -89,7 +95,7 @@ class XLearn(object):
         else:
             raise Exception("Invalid test.Can be test file path or xLearn DMatrix", type(test_path))
 
-    def setPreModel(self, pre_model_path):
+    def setPreModel(self, pre_model_path: str) -> None:
         """ Set file path of pre-trained model.
 
         Parameters
@@ -99,7 +105,7 @@ class XLearn(object):
         """
         self.handle.set_pre_model(pre_model_path)
 
-    def setValidate(self, val_path):
+    def setValidate(self, val_path: Union[str, DMatrix]) -> None:
         """Set file path of validation data.
 
         Parameters
@@ -114,7 +120,7 @@ class XLearn(object):
         else:
             raise Exception("Invalid validation.Can be test file path or xLearn DMatrix", type(val_path))
 
-    def setTXTModel(self, model_path):
+    def setTXTModel(self, model_path: str) -> None:
         """Set the path of TXT model file.
 
         Parameters
@@ -124,39 +130,39 @@ class XLearn(object):
         """
         self.handle.set_txt_model(model_path)
 
-    def setQuiet(self):
+    def setQuiet(self) -> None:
         """Set xlearn to quiet model"""
         self.handle.quiet = True
 
-    def setOnDisk(self):
+    def setOnDisk(self) -> None:
         """Set xlearn to use on-disk training"""
         self.handle.on_disk = True
 
-    def setNoBin(self):
+    def setNoBin(self) -> None:
         """Do not generate bin file"""
         self.handle.bin_out = False
 
-    def disableNorm(self):
+    def disableNorm(self) -> None:
         """Disable instance-wise normalization"""
         self.handle.norm = False
 
-    def disableLockFree(self):
+    def disableLockFree(self) -> None:
         """Disable lock free training"""
         self.handle.lock_free = False
 
-    def disableEarlyStop(self):
+    def disableEarlyStop(self) -> None:
         """Disable early-stopping"""
         self.handle.early_stop = False
 
-    def setSign(self):
+    def setSign(self) -> None:
         """Convert output to 0 and 1"""
         self.handle.sign = True
 
-    def setSigmoid(self):
+    def setSigmoid(self) -> None:
         """Convert output by using sigmoid"""
         self.handle.sigmoid = True
 
-    def fit(self, param, model_path):
+    def fit(self, param: dict[str, Any], model_path: str) -> None:
         """Check hyper-parameters, train model, and dump model.
 
         Parameters
@@ -169,7 +175,7 @@ class XLearn(object):
         self._set_Param(param)
         self.handle.fit(model_path)
 
-    def cv(self, param):
+    def cv(self, param: dict[str, Any]) -> None:
         """ Do cross-validation
 
         Parameters
@@ -180,7 +186,8 @@ class XLearn(object):
         self._set_Param(param)
         self.handle.cv()
 
-    def predict(self, model_path, out_path=None):
+    def predict(self, model_path: str,
+                out_path: Optional[str] = None) -> Optional[ndarray]:
         """Predict output
 
         Parameters
@@ -194,21 +201,21 @@ class XLearn(object):
         else:
             self.handle.predict_to_file(model_path, out_path)
 
-def create_linear():
+def create_linear() -> XLearn:
     """
     Create a linear model.
     """
     return XLearn(Model('linear'))
 
 
-def create_fm():
+def create_fm() -> XLearn:
     """
     Create a factorization machine.
     """
     return XLearn(Model('fm'))
 
 
-def create_ffm():
+def create_ffm() -> XLearn:
     """
     Create a field-aware factorization machine.
     """

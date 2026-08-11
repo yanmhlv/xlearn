@@ -65,10 +65,22 @@ int     munlock(const void *addr, size_t len);
 
 
 static int __map_mman_error(const DWORD err, const int deferr) {
-  if (err == 0)
-      return 0;
-  //TODO: implement
-  return err;
+  switch (err) {
+    case 0:                       return 0;
+    case ERROR_ACCESS_DENIED:     return EACCES;
+    case ERROR_INVALID_HANDLE:    return EBADF;
+    case ERROR_OUTOFMEMORY:
+    case ERROR_NOT_ENOUGH_MEMORY:
+    case ERROR_COMMITMENT_LIMIT:  return ENOMEM;
+    case ERROR_INVALID_PARAMETER:
+    case ERROR_INVALID_ADDRESS:
+    case ERROR_NOACCESS:
+    case ERROR_NOT_LOCKED:        return EINVAL;
+    case ERROR_FILE_INVALID:      return ENODEV;
+    case ERROR_DISK_FULL:         return ENOSPC;
+    case ERROR_WORKING_SET_QUOTA: return EAGAIN;
+    default:                      return deferr;
+  }
 }
 
 static DWORD __map_mmap_prot_page(const int prot) {

@@ -121,8 +121,11 @@ void LibsvmParser::Parse(char* buf,
       matrix.AddNode(i, idx, value);
       norm += value*value;
     }
-    norm = 1.0f / norm;
-    matrix.norm[i] = norm;
+    // A record with no features leaves norm at zero. AddRow() already set
+    // matrix.norm[i] to 1.0, which is what such a record wants.
+    if (norm != 0.0) {
+      matrix.norm[i] = 1.0f / norm;
+    }
   }
 }
 
@@ -186,8 +189,11 @@ void FFMParser::Parse(char* buf,
       matrix.AddNode(i, idx, value, field_id);
       norm += value*value;
     }
-    norm = 1.0f / norm;
-    matrix.norm[i] = norm;
+    // A record with no features leaves norm at zero. AddRow() already set
+    // matrix.norm[i] to 1.0, which is what such a record wants.
+    if (norm != 0.0) {
+      matrix.norm[i] = 1.0f / norm;
+    }
   }
 }
 
@@ -232,8 +238,11 @@ void CSVParser::Parse(char* buf,
       matrix.AddNode(i, idx, value);
       norm += value*value;
     }
-    norm = 1.0f / norm;
-    matrix.norm[i] = norm;
+    // A record with no features leaves norm at zero. AddRow() already set
+    // matrix.norm[i] to 1.0, which is what such a record wants.
+    if (norm != 0.0) {
+      matrix.norm[i] = 1.0f / norm;
+    }
   }
 }
 

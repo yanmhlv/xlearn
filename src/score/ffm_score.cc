@@ -153,7 +153,6 @@ void FFMScore::CalcGrad(const SparseRow* row,
 }
 
 // Calculate gradient and update current model using sgd
-// TODO(aksnzhy): solve unseen feature
 void FFMScore::calc_grad_sgd(const SparseRow* row,
                              Model& model,
                              real_t pg,
@@ -213,7 +212,6 @@ void FFMScore::calc_grad_sgd(const SparseRow* row,
 }
 
 // Calculate gradient and update current model using adagrad
-// TODO(aksnzhy): solve unseen feature
 void FFMScore::calc_grad_adagrad(const SparseRow* row,
                                  Model& model,
                                  real_t pg,

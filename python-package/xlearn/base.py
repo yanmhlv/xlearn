@@ -28,3 +28,12 @@ except ImportError:
         """Dummy class for pandas.DataFrame."""
 
         pass
+
+"""scipy"""
+try:
+    from scipy.sparse import issparse
+except ImportError:
+    def issparse(data):
+        """Dummy function for scipy.sparse.issparse."""
+
+        return False
