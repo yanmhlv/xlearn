@@ -39,8 +39,10 @@ namespace hn = hwy::HWY_NAMESPACE;
 //
 // The width is fixed at four rather than left to Highway to choose, because
 // kAlign is baked into the serialized model: get_aligned_k() pads K to a
-// multiple of it, and the per-coordinate optimizer state is interleaved in
-// blocks of that size. Widening the vector means changing the model format.
+// multiple of it. FFM goes further and interleaves the per-coordinate
+// optimizer state in blocks of that size, so a wider vector there would
+// change the model format. FM does not -- it keeps each of w, wg and z in one
+// flat run of aligned_k -- so FM could run wider whenever aligned_k allows.
 //
 // Load and Store both require kAlignByte alignment.
 //------------------------------------------------------------------------------
