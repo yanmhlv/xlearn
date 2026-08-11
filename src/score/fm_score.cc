@@ -81,54 +81,94 @@ LatentLayout LayoutOf(Model& model) {
 // four-lane machine running the wide path stays correct.
 inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
 
-// Accumulates s = sum_j (v_j * x_j) and pair = sum_{i<j} (v_i x_i)(v_j x_j)
-// over the row's latent blocks, in one walk.
+// Leaves s = sum_j (v_j * x_j) in the caller's buffer and returns
+// sum_{i<j} (v_i x_i)(v_j x_j), from one walk over the row's latent blocks.
 //
-// Each block folds into pair against the s built from the blocks before it, so
-// the pairwise sum is formed a pair at a time rather than as the textbook
+// Each block folds into the pairwise total against the s built from the blocks
+// before it, so that sum is formed a pair at a time rather than as the textbook
 // half of (s^2 - sum of squares). That identity costs the same three vector
 // ops but needs both terms to exist as floats and then cancels them against
 // each other: at large latent magnitudes it loses every significant digit,
 // and past sqrt(FLT_MAX) it overflows to inf - inf. This form has no such
-// range, and it leaves s in the caller's buffer, which is exactly what the
-// gradient needs next.
+// range, and it leaves s behind, which is exactly what the gradient needs next.
 //
-// The gradient wants s and not the pairwise sum, so it instantiates this with
-// kWantPair false and the pair half compiles away; pair may be null there.
-template <bool kWantPair, int N>
-void Accumulate(RowRef row,
-                Model& model,
-                real_t norm,
-                const LatentLayout& lay,
-                real_t* s,
-                real_t* pair) {
+// The pairwise total is only ever wanted summed, so it stays in registers
+// rather than getting a scratch plane of its own. s already carries a
+// loop-carried dependency through memory, and giving the pair term a second
+// one measured 20% on a wide K; kChains independent accumulators keep that
+// dependency off the critical path, for the same reason a reduction spreads.
+//
+// The gradient wants s and not the pairwise total, so it instantiates this
+// with kWantPair false and that half compiles away.
+template <bool kWantPair, int kChains, int N>
+real_t AccumulateChained(RowRef row,
+                         Model& model,
+                         real_t norm,
+                         const LatentLayout& lay,
+                         real_t* s) {
+  const index_t step = kChains * Vec<N>::Lanes();
+  const index_t unrolled_end = lay.aligned_k - lay.aligned_k % step;
+  Vec<N> total[kChains];
+  for (int c = 0; c < kChains; ++c) {
+    total[c] = Vec<N>::Zero();
+  }
   for (index_t n = 0; n < row.len; ++n) {
     index_t j1 = row.feat(n);
     // To avoid unseen feature in Prediction
     if (j1 >= lay.num_feat) continue;
     real_t* w = model.GetParameter_v() + j1 * lay.align0;
     Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
-    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+    auto fold = [&](int chain, index_t d) {
       Vec<N> x = Vec<N>::Load(w+d) * val;
       Vec<N> old_s = Vec<N>::Load(s+d);
       if (kWantPair) {
-        MulAdd(x, old_s, Vec<N>::Load(pair+d)).Store(pair+d);
+        total[chain] = MulAdd(x, old_s, total[chain]);
       }
       (old_s + x).Store(s+d);
+    };
+    index_t d = 0;
+    for (; d < unrolled_end; d += step) {
+      for (int c = 0; c < kChains; ++c) {
+        fold(c, d + c * Vec<N>::Lanes());
+      }
+    }
+    // A K too short to fill the chains leaves only this, and one chain is all
+    // there is to put it on.
+    for (; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+      fold(0, d);
     }
   }
+  if (!kWantPair) {
+    return 0;
+  }
+  Vec<N> sum = total[0];
+  for (int c = 1; c < kChains; ++c) {
+    sum = sum + total[c];
+  }
+  return sum.Sum();
 }
 
-// Sum of a run of aligned_k reals. One pass over the scratch, not over the
-// row, so this is O(k) and the chained accumulators the row walk needs would
-// buy nothing here.
-template <int N>
-real_t HorizontalSum(const real_t* v, index_t aligned_k) {
-  Vec<N> total = Vec<N>::Zero();
-  for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
-    total = total + Vec<N>::Load(v+d);
+// Picks how many accumulators to run, which only the latent width can answer:
+// a chain needs a vector block of its own to work on, and how many blocks a
+// width has depends on how wide the target's vectors turned out to be. Eight
+// lanes on AVX2 leave k=16 with two blocks where four lanes leave it with
+// four, and asking for chains the width cannot fill puts every block back on
+// the one tail chain -- which is where the dependency showed up in the first
+// place.
+template <bool kWantPair, int N>
+real_t Accumulate(RowRef row,
+                  Model& model,
+                  real_t norm,
+                  const LatentLayout& lay,
+                  real_t* s) {
+  const index_t blocks = lay.aligned_k / Vec<N>::Lanes();
+  if (blocks >= 4) {
+    return AccumulateChained<kWantPair, 4, N>(row, model, norm, lay, s);
   }
-  return total.Sum();
+  if (blocks >= 2) {
+    return AccumulateChained<kWantPair, 2, N>(row, model, norm, lay, s);
+  }
+  return AccumulateChained<kWantPair, 1, N>(row, model, norm, lay, s);
 }
 
 //------------------------------------------------------------------------------
@@ -277,14 +317,10 @@ real_t FMScore::CalcScore(RowRef row,
    *  latent factor                                        *
    *********************************************************/
   LatentLayout lay = LayoutOf(model);
-  real_t* s = ZeroedScratch(2 * lay.aligned_k);
-  real_t* pair = s + lay.aligned_k;
-  if (WideLanes(lay.aligned_k)) {
-    Accumulate<true, 8>(row, model, norm, lay, s, pair);
-    return t + HorizontalSum<8>(pair, lay.aligned_k);
-  }
-  Accumulate<true, 4>(row, model, norm, lay, s, pair);
-  return t + HorizontalSum<4>(pair, lay.aligned_k);
+  real_t* s = ZeroedScratch(lay.aligned_k);
+  return t + (WideLanes(lay.aligned_k)
+                  ? Accumulate<true, 8>(row, model, norm, lay, s)
+                  : Accumulate<true, 4>(row, model, norm, lay, s));
 }
 
 // Calculate gradient and update current model parameters.
@@ -296,9 +332,9 @@ void FMScore::CalcGrad(RowRef row,
   LatentLayout lay = LayoutOf(model);
   real_t* s = ZeroedScratch(lay.aligned_k);
   if (WideLanes(lay.aligned_k)) {
-    Accumulate<false, 8>(row, model, norm, lay, s, nullptr);
+    Accumulate<false, 8>(row, model, norm, lay, s);
   } else {
-    Accumulate<false, 4>(row, model, norm, lay, s, nullptr);
+    Accumulate<false, 4>(row, model, norm, lay, s);
   }
   this->latent_grad(row, model, pg, norm, s);
 }
