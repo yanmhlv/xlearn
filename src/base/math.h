@@ -167,12 +167,7 @@ static inline real_t fastersigmoid(real_t x) {
 // 1 / sqrt() Magic function !!
 //------------------------------------------------------------------------------
 static inline real_t InvSqrt(real_t x) {
-  real_t xhalf = 0.5f*x;
-  int i = *reinterpret_cast<int*>(&x);  // get bits for floating VALUE
-  i = 0x5f375a86-(i>>1);  // gives initial guess y0
-  x = *reinterpret_cast<real_t*>(&i);  // convert bits BACK to float
-  x = x*(1.5f-xhalf*x*x);  // Newton step, repeating increases accuracy
-  return x;
+  return 1.0f / std::sqrt(x);
 }
 
 #endif   // XLEARN_BASE_MATH_H_

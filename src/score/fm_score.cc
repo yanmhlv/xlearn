@@ -151,20 +151,16 @@ void FMScore::CalcGrad(const SparseRow* row,
                        Model& model,
                        real_t pg,
                        real_t norm) {
-  // Using sgd
-  if (opt_type_.compare("sgd") == 0) {
-    this->calc_grad_sgd(row, model, pg, norm);
-  }
-  // Using adagrad
-  else if (opt_type_.compare("adagrad") == 0) {
-    this->calc_grad_adagrad(row, model, pg, norm);
-  }
-  // Using ftrl 
-  else if (opt_type_.compare("ftrl") == 0) {
-    this->calc_grad_ftrl(row, model, pg, norm);
-  }
-  else {
-    LOG(FATAL) << "Unknow optimization method: " << opt_type_;
+  switch (opt_) {
+    case kSgd:
+      this->calc_grad_sgd(row, model, pg, norm);
+      break;
+    case kAdaGrad:
+      this->calc_grad_adagrad(row, model, pg, norm);
+      break;
+    case kFtrl:
+      this->calc_grad_ftrl(row, model, pg, norm);
+      break;
   }
 }
 
@@ -254,8 +250,9 @@ void FMScore::calc_grad_adagrad(const SparseRow* row,
     real_t &wl = w[feat_id*2];
     real_t &wlg = w[feat_id*2+1];
     real_t g = regu_lambda_*wl+pg*iter->feat_val*sqrt_norm;
-    wlg += g*g;
-    wl -= learning_rate_ * g * InvSqrt(wlg);
+    real_t cache = wlg + g*g;
+    wlg = cache;
+    wl -= learning_rate_ * g * InvSqrt(cache);
   }
   // bias
   w = model.GetParameter_b();
