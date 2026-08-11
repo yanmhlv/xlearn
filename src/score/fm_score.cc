@@ -19,6 +19,7 @@ This file is the implementation of FMScore class.
 */
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "src/score/fm_score.h"
@@ -61,13 +62,12 @@ real_t LatentSum(const SparseRow* row,
   }
   const index_t step = kChains * kAlign;
   const index_t unrolled_end = aligned_k - aligned_k % step;
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
     // To avoid unseen feature in Prediction
     if (j1 >= num_feat) continue;
     real_t* w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(iter->feat_val * norm);
+    Float4 val = Float4::Broadcast(entry.feat_val * norm);
     index_t d = 0;
     for (; d < unrolled_end; d += step) {
       for (int c = 0; c < kChains; ++c) {
@@ -102,17 +102,16 @@ real_t FMScore::CalcScore(const SparseRow* row,
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/
-  real_t sqrt_norm = sqrt(norm);
+  real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
   real_t t = 0;
   index_t aux_size = model.GetAuxiliarySize();
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature in Prediction
     if (feat_id >= num_feat) continue;
-    t += (iter->feat_val * w[feat_id*aux_size] * sqrt_norm);
+    t += (entry.feat_val * w[feat_id*aux_size] * sqrt_norm);
   }
   // bias
   w = model.GetParameter_b();
@@ -123,12 +122,11 @@ real_t FMScore::CalcScore(const SparseRow* row,
   index_t aligned_k = model.get_aligned_k();
   index_t align0 = model.get_aligned_k() * aux_size;
   real_t* s = ZeroedScratch(aligned_k);
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
     // To avoid unseen feature in Prediction
     if (j1 >= num_feat) continue;
-    real_t v1 = iter->feat_val;
+    real_t v1 = entry.feat_val;
     real_t *w = model.GetParameter_v() + j1 * align0;
     Float4 val = Float4::Broadcast(v1*norm);
     for (index_t d = 0; d < aligned_k; d += kAlign) {
@@ -152,13 +150,13 @@ void FMScore::CalcGrad(const SparseRow* row,
                        real_t pg,
                        real_t norm) {
   switch (opt_) {
-    case kSgd:
+    case OptType::kSgd:
       this->calc_grad_sgd(row, model, pg, norm);
       break;
-    case kAdaGrad:
+    case OptType::kAdaGrad:
       this->calc_grad_adagrad(row, model, pg, norm);
       break;
-    case kFtrl:
+    case OptType::kFtrl:
       this->calc_grad_ftrl(row, model, pg, norm);
       break;
   }
@@ -172,16 +170,15 @@ void FMScore::calc_grad_sgd(const SparseRow* row,
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/  
-  real_t sqrt_norm = sqrt(norm);
+  real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id];
-    real_t g = regu_lambda_*wl+pg*iter->feat_val*sqrt_norm;
+    real_t g = regu_lambda_*wl+pg*entry.feat_val*sqrt_norm;
     wl -= learning_rate_ * g;
   }
   // bias
@@ -199,12 +196,11 @@ void FMScore::calc_grad_sgd(const SparseRow* row,
   Float4 lr = Float4::Broadcast(learning_rate_);
   Float4 lamb = Float4::Broadcast(regu_lambda_);
   real_t* s = ZeroedScratch(aligned_k);
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
     // To avoid unseen feature
     if (j1 >= num_feat) continue;
-    real_t v1 = iter->feat_val;
+    real_t v1 = entry.feat_val;
     real_t *w = model.GetParameter_v() + j1 * align0;
     Float4 val = Float4::Broadcast(v1*norm);
     for (index_t d = 0; d < aligned_k; d += kAlign) {
@@ -213,12 +209,11 @@ void FMScore::calc_grad_sgd(const SparseRow* row,
       MulAdd(weight, val, sum).Store(s+d);
     }
   }
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
   // To avoid unseen feature
     if (j1 >= num_feat) continue;
-    real_t v1 = iter->feat_val;
+    real_t v1 = entry.feat_val;
     real_t *w = model.GetParameter_v() + j1 * align0;
     Float4 val = Float4::Broadcast(v1*norm);
     Float4 pgv = pg_all * val;
@@ -239,17 +234,16 @@ void FMScore::calc_grad_adagrad(const SparseRow* row,
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/
-  real_t sqrt_norm = sqrt(norm);
+  real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (SparseRow::const_iterator iter = row->begin();
-      iter != row->end(); ++iter) {
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id*2];
     real_t &wlg = w[feat_id*2+1];
-    real_t g = regu_lambda_*wl+pg*iter->feat_val*sqrt_norm;
+    real_t g = regu_lambda_*wl+pg*entry.feat_val*sqrt_norm;
     real_t cache = wlg + g*g;
     wlg = cache;
     wl -= learning_rate_ * g * InvSqrt(cache);
@@ -271,12 +265,11 @@ void FMScore::calc_grad_adagrad(const SparseRow* row,
   Float4 lr = Float4::Broadcast(learning_rate_);
   Float4 lamb = Float4::Broadcast(regu_lambda_);
   real_t* s = ZeroedScratch(aligned_k);
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
     // To avoid unseen feature
     if (j1 >= num_feat) continue;
-    real_t v1 = iter->feat_val;
+    real_t v1 = entry.feat_val;
     real_t *w = model.GetParameter_v() + j1 * align0;
     Float4 val = Float4::Broadcast(v1*norm);
     for (index_t d = 0; d < aligned_k; d += kAlign) {
@@ -285,12 +278,11 @@ void FMScore::calc_grad_adagrad(const SparseRow* row,
       MulAdd(weight, val, sum).Store(s+d);
     }
   }
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
     // To avoid unseen feature
     if (j1 >= num_feat) continue;
-    real_t v1 = iter->feat_val;
+    real_t v1 = entry.feat_val;
     real_t *w = model.GetParameter_v() + j1 * align0;
     Float4 val = Float4::Broadcast(v1*norm);
     Float4 pgv = pg_all * val;
@@ -314,29 +306,28 @@ void FMScore::calc_grad_ftrl(const SparseRow* row,
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/
-  real_t sqrt_norm = sqrt(norm);
+  real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id*3];
     real_t &wlg = w[feat_id*3+1];
     real_t &wlz = w[feat_id*3+2];
-    real_t g = lambda_2_*wl+pg*iter->feat_val*sqrt_norm; 
+    real_t g = lambda_2_*wl+pg*entry.feat_val*sqrt_norm; 
     real_t old_wlg = wlg;
     wlg += g*g;
-    real_t sigma = (sqrt(wlg)-sqrt(old_wlg)) / alpha_;
+    real_t sigma = (std::sqrt(wlg)-std::sqrt(old_wlg)) * inv_alpha_;
     wlz += (g-sigma*wl);
     int sign = wlz > 0 ? 1:-1;
     if (sign*wlz <= lambda_1_) {
       wl = 0;
     } else {
       wl = (sign*lambda_1_-wlz) / 
-           ((beta_ + sqrt(wlg)) / 
-            alpha_ + lambda_2_);
+           ((beta_ + std::sqrt(wlg)) *
+            inv_alpha_ + lambda_2_);
     }
   }
   // bias
@@ -347,15 +338,15 @@ void FMScore::calc_grad_ftrl(const SparseRow* row,
   real_t g = pg;
   real_t old_wbg = wbg;
   wbg += g*g;
-  real_t sigma = (sqrt(wbg)-sqrt(old_wbg)) / alpha_;
+  real_t sigma = (std::sqrt(wbg)-std::sqrt(old_wbg)) * inv_alpha_;
   wbz += (g-sigma*wb);
   int sign = wbz > 0 ? 1:-1;
   if (sign*wbz <= lambda_1_) {
     wb = 0;
   } else {
     wb = (sign*lambda_1_-wbz) / 
-         ((beta_ + sqrt(wbg)) / 
-          alpha_ + lambda_2_);
+         ((beta_ + std::sqrt(wbg)) *
+          inv_alpha_ + lambda_2_);
   }  
   /*********************************************************
    *  latent factor                                        *
@@ -364,17 +355,16 @@ void FMScore::calc_grad_ftrl(const SparseRow* row,
   index_t align0 = model.get_aligned_k() * 
                    model.GetAuxiliarySize();
   Float4 pg_all = Float4::Broadcast(pg);
-  Float4 alpha = Float4::Broadcast(alpha_);
+  Float4 inv_alpha = Float4::Broadcast(inv_alpha_);
   Float4 beta = Float4::Broadcast(beta_);
   Float4 l1 = Float4::Broadcast(lambda_1_);
   Float4 l2 = Float4::Broadcast(lambda_2_);
   real_t* s = ZeroedScratch(aligned_k);
- for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+ for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
     // To avoid unseen feature
     if (j1 >= num_feat) continue;
-    real_t v1 = iter->feat_val;
+    real_t v1 = entry.feat_val;
     real_t *w = model.GetParameter_v() + j1 * align0;
     Float4 val = Float4::Broadcast(v1*norm);
     for (index_t d = 0; d < aligned_k; d += kAlign) {
@@ -383,12 +373,11 @@ void FMScore::calc_grad_ftrl(const SparseRow* row,
       MulAdd(weight, val, sum).Store(s+d);
     }
   }
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t j1 = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t j1 = entry.feat_id;
     // To avoid unseen feature
     if (j1 >= num_feat) continue;
-    real_t v1 = iter->feat_val;
+    real_t v1 = entry.feat_val;
     real_t *w_base = model.GetParameter_v() + j1 * align0;
     Float4 val = Float4::Broadcast(v1*norm);
     Float4 pgv = pg_all * val;
@@ -403,7 +392,7 @@ void FMScore::calc_grad_ftrl(const SparseRow* row,
       Float4 grad = MulAdd(l2, weight, pgv * NegMulAdd(weight, val, sum));
       Float4 grad_sq = grad * grad;
       Float4 sigma = (Sqrt(weight_grad + grad_sq)
-                      - Sqrt(weight_grad)) / alpha;
+                      - Sqrt(weight_grad)) * inv_alpha;
       z_val = NegMulAdd(sigma, weight, z_val + grad);
       z_val.Store(z);
       weight_grad = weight_grad + grad_sq;
@@ -411,7 +400,7 @@ void FMScore::calc_grad_ftrl(const SparseRow* row,
       // Update w. Where |z| is inside the l1 band the weight is driven to
       // zero, so the branch becomes a select over the whole vector.
       Float4 numerator = CopySign(l1, z_val) - z_val;
-      Float4 denominator = (beta + Sqrt(weight_grad)) / alpha + l2;
+      Float4 denominator = MulAdd(beta + Sqrt(weight_grad), inv_alpha, l2);
       IfThenZeroElse(Abs(z_val) <= l1,
                      numerator / denominator).Store(w);
     }

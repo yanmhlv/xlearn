@@ -18,6 +18,8 @@
 This file is the implementation of LinearScore class.
 */
 
+#include <cmath>
+
 #include "src/score/linear_score.h"
 #include "src/base/math.h"
 
@@ -32,13 +34,12 @@ real_t LinearScore::CalcScore(const SparseRow* row,
   real_t score = 0.0;
   index_t auxiliary_size = model.GetAuxiliarySize();
   // linear term
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature in Prediction
     if (feat_id >= num_feat) continue;
     index_t idx = feat_id * auxiliary_size;
-    score += w[idx] * iter->feat_val;
+    score += w[idx] * entry.feat_val;
   }
   // bias
   score += model.GetParameter_b()[0];
@@ -51,13 +52,13 @@ void LinearScore::CalcGrad(const SparseRow* row,
                            real_t pg,
                            real_t norm) {
   switch (opt_) {
-    case kSgd:
+    case OptType::kSgd:
       this->calc_grad_sgd(row, model, pg, norm);
       break;
-    case kAdaGrad:
+    case OptType::kAdaGrad:
       this->calc_grad_adagrad(row, model, pg, norm);
       break;
-    case kFtrl:
+    case OptType::kFtrl:
       this->calc_grad_ftrl(row, model, pg, norm);
       break;
   }
@@ -71,10 +72,9 @@ void LinearScore::calc_grad_sgd(const SparseRow* row,
   // linear term
   real_t* w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    real_t gradient = pg * iter->feat_val;
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    real_t gradient = pg * entry.feat_val;
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     gradient += regu_lambda_ * w[feat_id];
@@ -95,12 +95,11 @@ void LinearScore::calc_grad_adagrad(const SparseRow* row,
   // linear term
   real_t* w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
-    real_t gradient = pg * iter->feat_val;
+    real_t gradient = pg * entry.feat_val;
     index_t idx_g = feat_id * 2;
     index_t idx_c = idx_g + 1;
     gradient += regu_lambda_ * w[idx_g];
@@ -126,29 +125,28 @@ void LinearScore::calc_grad_ftrl(const SparseRow* row,
                                  real_t pg,
                                  real_t norm) {
   // linear term
-  real_t sqrt_norm = sqrt(norm);
+  real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (SparseRow::const_iterator iter = row->begin();
-       iter != row->end(); ++iter) {
-    index_t feat_id = iter->feat_id;
+  for (const Node& entry : *row) {
+    index_t feat_id = entry.feat_id;
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id*3];
     real_t &wlg = w[feat_id*3+1];
     real_t &wlz = w[feat_id*3+2];
-    real_t g = lambda_2_*wl+pg*iter->feat_val*sqrt_norm; 
+    real_t g = lambda_2_*wl+pg*entry.feat_val*sqrt_norm; 
     real_t old_wlg = wlg;
     wlg += g*g;
-    real_t sigma = (sqrt(wlg)-sqrt(old_wlg)) / alpha_;
+    real_t sigma = (std::sqrt(wlg)-std::sqrt(old_wlg)) * inv_alpha_;
     wlz += (g-sigma*wl);
     int sign = wlz > 0 ? 1:-1;
     if (sign*wlz <= lambda_1_) {
       wl = 0;
     } else {
       wl = (sign*lambda_1_-wlz) / 
-           ((beta_ + sqrt(wlg)) / 
-            alpha_ + lambda_2_);
+           ((beta_ + std::sqrt(wlg)) *
+            inv_alpha_ + lambda_2_);
     }
   }
   // bias
@@ -159,15 +157,15 @@ void LinearScore::calc_grad_ftrl(const SparseRow* row,
   real_t g = pg;
   real_t old_wbg = wbg;
   wbg += g*g;
-  real_t sigma = (sqrt(wbg)-sqrt(old_wbg)) / alpha_;
+  real_t sigma = (std::sqrt(wbg)-std::sqrt(old_wbg)) * inv_alpha_;
   wbz += (g-sigma*wb);
   int sign = wbz > 0 ? 1:-1;
   if (sign*wbz <= lambda_1_) {
     wb = 0;
   } else {
     wb = (sign*lambda_1_-wbz) / 
-         ((beta_ + sqrt(wbg)) / 
-          alpha_ + lambda_2_);
+         ((beta_ + std::sqrt(wbg)) *
+          inv_alpha_ + lambda_2_);
   }
 }
 
