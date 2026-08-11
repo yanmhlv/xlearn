@@ -82,6 +82,25 @@ namespace xLearn {
 // we can shrink back to find the best model by using Shrink() method.
 //------------------------------------------------------------------------------
 
+//------------------------------------------------------------------------------
+// A checkpoint carries the arrangement of param_v_ only implicitly: the file
+// holds one opaque blob whose length is recomputed on load from the feature,
+// field, K and auxiliary counts. Two different arrangements of the same
+// parameters are therefore files of the same size, and one loads as the other
+// with nothing to fail on -- every latent coordinate off by a slot, gradient
+// cache read as weights. The magic and version at the head are what turn that
+// into a refusal, and -pre is the path that needs them: it skips Initialize()
+// and takes the layout from the file.
+//
+// Unlike the data cache in data_structure.h, a rejected model cannot be
+// regenerated from anything, so this reports and stops rather than recovering.
+//------------------------------------------------------------------------------
+const uint64 kModelMagic = 0x4C444D5F4E52584CULL;  // "LXRN_MDL" on disk
+
+// Bump on any change to how the blobs below the header are arranged -- their
+// order, the layout within param_v_, what aux_size_ planes mean.
+const uint32 kModelVersion = 1;
+
 class Model {
  public:
   // Default Constructor and Destructor

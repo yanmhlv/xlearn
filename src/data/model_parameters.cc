@@ -218,6 +218,11 @@ void Model::Serialize(const std::string& filename) {
 #else
   FILE *file = OpenFileOrDie(filename.c_str(), "wb");
 #endif
+  // The magic comes before anything else, so that a checkpoint from a build
+  // that arranged the parameters differently fails on its opening bytes
+  // rather than being read as this build's layout.
+  WriteDataToDisk(file, (char*)&kModelMagic, sizeof(kModelMagic));
+  WriteDataToDisk(file, (char*)&kModelVersion, sizeof(kModelVersion));
   // Write score function
   WriteStringToFile(file, score_func_);
   // Write loss function
@@ -302,6 +307,27 @@ bool Model::Deserialize(const std::string& filename) {
   FILE* file = OpenFileOrDie(filename.c_str(), "rb");
 #endif
   if (file == NULL) { return false; }
+  uint64 magic = 0;
+  uint32 version = 0;
+  if (ReadDataFromDisk(file, (char*)&magic, sizeof(magic)) != sizeof(magic) ||
+      magic != kModelMagic) {
+    Close(file);
+    Color::print_error(
+      StringPrintf("%s is not an xLearn model file.", filename.c_str())
+    );
+    return false;
+  }
+  if (ReadDataFromDisk(file, (char*)&version, sizeof(version))
+          != sizeof(version) ||
+      version != kModelVersion) {
+    Close(file);
+    Color::print_error(
+      StringPrintf("%s was written in model format v%u and this build reads "
+                   "v%u. Retrain the model.",
+                   filename.c_str(), version, kModelVersion)
+    );
+    return false;
+  }
   // Read score function
   ReadStringFromFile(file, score_func_);
   // Read loss function
