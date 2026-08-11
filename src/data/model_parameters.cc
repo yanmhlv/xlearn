@@ -30,6 +30,20 @@ This file is the implementation of the Model class.
 
 namespace xLearn {
 
+namespace {
+
+// What auxiliary plane p starts at, for every parameter that has one.
+//
+// Plane 1 is a squared-gradient cache, smoothed by starting at one. Plane 2
+// exists only under ftrl, where it is z and has to start at zero: the weight
+// ftrl derives is (sign(z)*lambda_1 - z) / ((beta + sqrt(n))/alpha + lambda_2),
+// so a z of one sends every weight to about -0.15 at the default
+// hyper-parameters on its first update, whatever the gradient was -- discarding
+// the random latent initialization and biasing the linear weights negative.
+inline real_t aux_init(index_t plane) { return plane == 2 ? 0.0f : 1.0f; }
+
+} // namespace
+
 //------------------------------------------------------------------------------
 // The Model class
 //------------------------------------------------------------------------------
@@ -125,12 +139,12 @@ void Model::set_value() {
   for (index_t i = 0; i < param_num_w_; i += aux_size_) {
     param_w_[i] = 0.0;        /* model */
     for (index_t j = 1; j < aux_size_; ++j) {
-      param_w_[i+j] = 1.0;    /* gradient cache */
+      param_w_[i+j] = aux_init(j);
     }
   }
   param_b_[0] = 0.0;      /* model */
   for (index_t j = 1; j < aux_size_; ++j) {
-    param_b_[j] = 1.0;    /* gradient cache */
+    param_b_[j] = aux_init(j);
   }
   /*********************************************************
    *  Initialize latent factor for fm                      *
@@ -146,8 +160,10 @@ void Model::set_value() {
       for(index_t d = num_K_; d < k_aligned; d++, w++) {
         *w = 0;  /* Beyond aligned number */
       }
-      for(index_t d = k_aligned; d < aux_size_*k_aligned; d++, w++) {
-        *w = 1.0;  /* gradient cache */
+      for (index_t p = 1; p < aux_size_; ++p) {
+        for(index_t d = 0; d < k_aligned; d++, w++) {
+          *w = aux_init(p);
+        }
       }
     }
   }
@@ -166,8 +182,10 @@ void Model::set_value() {
         for(index_t d = num_K_; d < k_aligned; d++, w++) {
           *w = 0;  /* Beyond aligned number */
         }
-        for(index_t d = k_aligned; d < aux_size_*k_aligned; d++, w++) {
-          *w = 1.0;  /* gradient cache */
+        for (index_t p = 1; p < aux_size_; ++p) {
+          for(index_t d = 0; d < k_aligned; d++, w++) {
+            *w = aux_init(p);
+          }
         }
       }
     }
