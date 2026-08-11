@@ -44,10 +44,15 @@ std::string get_host_name() {
   return std::string(buf.nodename);
 }
 
-// Get user name
+// Get user name. Neither variable is set in a container, under most CI
+// runners, or in a cron or systemd job, so both being absent is an ordinary
+// case rather than one worth failing the run over.
 std::string get_user_name() {
   const char* username = getenv("USER");
-  return username != NULL ? username : getenv("USERNAME");
+  if (username == NULL) {
+    username = getenv("USERNAME");
+  }
+  return username != NULL ? std::string(username) : std::string("unknown");
 }
 
 // Get current system time
