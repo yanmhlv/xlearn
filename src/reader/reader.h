@@ -151,7 +151,10 @@ class Reader {
   /* Split string for data items */
   std::string splitor_;
   /* A block of memory to store the data */
-  char* block_;
+  /* A block of memory to store the data. Owned: the paths that allocate it and
+  the paths that do not both reach the destructor, and only one of them has a
+  buffer to release. */
+  scoped_array<char> block_;
   /* Block size */
   size_t block_size_;
   /* Random seed */
@@ -202,9 +205,6 @@ class InmemReader : public Reader {
   virtual void Clear() {
     data_buf_.Reset();
     data_samples_.Reset();
-    if (block_ != nullptr) {
-      delete [] block_;
-    }
   }
 
   // Return the Reader type
@@ -277,9 +277,6 @@ class OndiskReader : public Reader {
   // Free the memory of data matrix.
   virtual void Clear() {
     data_samples_.Reset();
-    if (block_ != nullptr) {
-      delete [] block_;
-    }
   }
 
   // Return the Reader type
@@ -320,9 +317,6 @@ class FromDMReader : public Reader {
   // Free the memory of data matrix.
   virtual void Clear() {
     data_samples_.Reset();
-    if (block_ != nullptr) {
-      delete [] block_;
-    }
   }
 
   // Return the Reader type

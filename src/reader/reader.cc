@@ -147,7 +147,7 @@ void InmemReader::Initialize(const std::string& filename) {
     );
     // Allocate memory for block
     try {
-      this->block_ = (char*)malloc(block_size_*1024*1024);
+      this->block_.reset(new char[block_size_*1024*1024]);
     } catch (std::bad_alloc&) {
       LOG(FATAL) << "Cannot allocate enough memory for data  \
                      block. Block size: " 
@@ -222,14 +222,14 @@ void InmemReader::init_from_txt() {
   // Read until the end of file
   for (;;) {
     // Read a block of data from disk file
-    size_t ret = ReadDataFromDisk(file, block_, read_byte);
+    size_t ret = ReadDataFromDisk(file, block_.get(), read_byte);
     if (ret == 0) {
       break;
     } else if (ret == read_byte) {
       // Find the last '\n', and shrink back file pointer
-      this->shrink_block(block_, &ret, file);
+      this->shrink_block(block_.get(), &ret, file);
     } // else ret < read_byte: we don't need shrink_block()
-    parser_->Parse(block_, ret, data_buf_, false);
+    parser_->Parse(block_.get(), ret, data_buf_, false);
   }
   data_buf_.SetHash(HashFile(filename_, true),
                     HashFile(filename_, false));
@@ -247,7 +247,6 @@ void InmemReader::init_from_txt() {
     std::string bin_file = filename_ + ".bin";
     data_buf_.Serialize(bin_file);
   }
-  delete [] block_;
   Close(file);
 }
 
@@ -294,7 +293,7 @@ void OndiskReader::Initialize(const std::string& filename) {
   parser_->setSplitor(this->splitor_);
   // Allocate memory for block
   try {
-    this->block_ = (char*)malloc(block_size_*1024*1024);
+    this->block_.reset(new char[block_size_*1024*1024]);
   } catch (std::bad_alloc&) {
     LOG(FATAL) << "Cannot allocate enough memory for data  \
                    block. Block size: " 
@@ -322,16 +321,16 @@ index_t OndiskReader::Samples(DMatrix* &matrix) {
   // Convert MB to Byte
   uint64 read_byte = block_size_ * 1024 * 1024;
   // Read a block of data from disk file
-  size_t ret = ReadDataFromDisk(file_ptr_, block_, read_byte);
+  size_t ret = ReadDataFromDisk(file_ptr_, block_.get(), read_byte);
   if (ret == 0) {
     matrix = nullptr;
     return 0;
   } else if (ret == read_byte) {
     // Find the last '\n', and shrink back file pointer
-    shrink_block(block_, &ret, file_ptr_);
+    shrink_block(block_.get(), &ret, file_ptr_);
   } // else ret < read_byte: we don't need shrink_block()
   // Parse block to data_sample_
-  parser_->Parse(block_, ret, data_samples_, true);
+  parser_->Parse(block_.get(), ret, data_samples_, true);
   matrix = &data_samples_;
   return data_samples_.row_length;
 }
