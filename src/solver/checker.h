@@ -47,7 +47,7 @@ class Checker {
   // Check and parse arguments
   bool check_cmd(HyperParam& hyper_param);
 
-  // Check hyper-param. Used by c_api
+  // Check hyper-param. Used by the Python API
   bool check_param(HyperParam& hyper_param);
 
  protected:

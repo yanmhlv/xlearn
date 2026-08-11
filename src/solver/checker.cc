@@ -224,7 +224,7 @@ bool Checker::check_cmd(HyperParam& hyper_param) {
   }
 }
 
-// Check hyper-param. Used by c_api
+// Check hyper-param. Used by the Python API
 bool Checker::check_param(HyperParam& hyper_param) {
   if (hyper_param.is_train) {
     return check_train_param(hyper_param);
@@ -590,7 +590,7 @@ bool Checker::check_train_options(HyperParam& hyper_param) {
   return true;
 }
 
-// Check the given hyper-param. Used by c_api
+// Check the given hyper-param. Used by the Python API
 bool Checker::check_train_param(HyperParam& hyper_param) {
   bool bo = true;
   /*********************************************************
@@ -893,7 +893,7 @@ bool Checker::check_prediction_options(HyperParam& hyper_param) {
   return true;
 }
 
-// Check the given param. Used by c_api
+// Check the given param. Used by the Python API
 bool Checker::check_prediction_param(HyperParam& hyper_param) {
  bool bo = true;
  /*********************************************************
