@@ -46,6 +46,14 @@ namespace xLearn {
 //------------------------------------------------------------------------------
 class Score {
  public:
+  // Which optimizer CalcGrad dispatches to. Resolved once in Initialize:
+  // matching the name on every row costs a string compare per example.
+  enum OptType {
+    kSgd,
+    kAdaGrad,
+    kFtrl
+  };
+
   // Constructor and Destructor
   Score() { }
   virtual ~Score() { }
@@ -65,6 +73,15 @@ class Score {
     lambda_1_ = lambda_1;
     lambda_2_ = lambda_2;
     opt_type_ = opt_type;
+    if (opt_type.compare("sgd") == 0) {
+      opt_ = kSgd;
+    } else if (opt_type.compare("adagrad") == 0) {
+      opt_ = kAdaGrad;
+    } else if (opt_type.compare("ftrl") == 0) {
+      opt_ = kFtrl;
+    } else {
+      LOG(FATAL) << "Unknow optimization method: " << opt_type;
+    }
   }
 
   // Given one example and current model, this method
@@ -88,6 +105,7 @@ class Score {
   real_t lambda_1_;
   real_t lambda_2_;
   std::string opt_type_;
+  OptType opt_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(Score);

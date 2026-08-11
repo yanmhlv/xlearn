@@ -50,20 +50,16 @@ void LinearScore::CalcGrad(const SparseRow* row,
                            Model& model,
                            real_t pg,
                            real_t norm) {
-  // Using sgd
-  if (opt_type_.compare("sgd") == 0) {
-    this->calc_grad_sgd(row, model, pg, norm);
-  }
-  // Using adagrad
-  else if (opt_type_.compare("adagrad") == 0) {
-    this->calc_grad_adagrad(row, model, pg, norm);
-  }
-  // Using ftrl
-  else if (opt_type_.compare("ftrl") == 0) {
-    this->calc_grad_ftrl(row, model, pg, norm);
-  }
-  else {
-    LOG(FATAL) << "Unknow optimization method: " << opt_type_;
+  switch (opt_) {
+    case kSgd:
+      this->calc_grad_sgd(row, model, pg, norm);
+      break;
+    case kAdaGrad:
+      this->calc_grad_adagrad(row, model, pg, norm);
+      break;
+    case kFtrl:
+      this->calc_grad_ftrl(row, model, pg, norm);
+      break;
   }
 }
 
@@ -108,9 +104,12 @@ void LinearScore::calc_grad_adagrad(const SparseRow* row,
     index_t idx_g = feat_id * 2;
     index_t idx_c = idx_g + 1;
     gradient += regu_lambda_ * w[idx_g];
-    w[idx_c] += (gradient * gradient);
-    w[idx_g] -= (learning_rate_ * gradient *
-                 InvSqrt(w[idx_c]));
+    // Hold the updated cache in a register: writing it to w[] and reading it
+    // straight back puts a store-to-load round trip on the critical path,
+    // ahead of a square root that is already the longest link in it.
+    real_t cache = w[idx_c] + gradient * gradient;
+    w[idx_c] = cache;
+    w[idx_g] -= (learning_rate_ * gradient * InvSqrt(cache));
   }
   // bias
   w = model.GetParameter_b();
