@@ -366,7 +366,9 @@ NB_MODULE(_core, m) {
   BindParam(model, "log", &xLearn::HyperParam::log_file);
   BindParam(model, "lr", &xLearn::HyperParam::learning_rate);
   BindParam(model, "k", &xLearn::HyperParam::num_K);
-  BindParam(model, "lambda", &xLearn::HyperParam::regu_lambda);
+  // Not "lambda": a Python keyword cannot be an attribute name, and the stub
+  // generator has to be able to write this one down.
+  BindParam(model, "regu_lambda", &xLearn::HyperParam::regu_lambda);
   BindParam(model, "init", &xLearn::HyperParam::model_scale);
   BindParam(model, "epoch", &xLearn::HyperParam::num_epoch);
   BindParam(model, "fold", &xLearn::HyperParam::num_folds);

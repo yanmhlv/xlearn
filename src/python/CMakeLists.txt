@@ -22,3 +22,13 @@ endif()
 target_link_libraries(_core PRIVATE ${LIBS})
 
 install(TARGETS _core LIBRARY DESTINATION xlearn)
+
+# The signatures nanobind knows are only in the compiled module, so the stub
+# is generated from it rather than written by hand.
+nanobind_add_stub(_core_stub
+  MODULE _core
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/_core.pyi"
+  PYTHON_PATH $<TARGET_FILE_DIR:_core>
+  DEPENDS _core
+)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/_core.pyi" DESTINATION xlearn)

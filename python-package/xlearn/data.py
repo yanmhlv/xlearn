@@ -14,6 +14,8 @@
 
 # coding: utf-8
 
+from typing import Any, Optional
+
 import numpy as np
 from numpy import ndarray
 
@@ -22,7 +24,8 @@ from .base import DataFrame, Series, issparse
 
 # This class is the xLearn core data
 class DMatrix(object):
-    def __init__(self, data, label=None, field_map=None):
+    def __init__(self, data: Any, label: Any = None,
+                 field_map: Any = None) -> None:
         """
         Initial function.
         Parameters:
@@ -42,7 +45,8 @@ class DMatrix(object):
         else:
             raise ValueError('Input data must be numpy.ndarray, pandas.DataFrame or scipy.sparse matrix')
 
-    def _init_from_npy2d(self, mat, label, field_map):
+    def _init_from_npy2d(self, mat: Any, label: Any,
+                         field_map: Any) -> None:
         """
         This function do initialize DMatrix from numpy 2D and pandas DataFrame.
         Parameters
@@ -59,7 +63,8 @@ class DMatrix(object):
 
         self.__handle = CoreDMatrix(data, labels, fields)
 
-    def _init_from_sparse(self, mat, label, field_map):
+    def _init_from_sparse(self, mat: Any, label: Any,
+                          field_map: Any) -> None:
         """
         This function do initialize DMatrix from a SciPy sparse matrix.
         Parameters
@@ -78,7 +83,7 @@ class DMatrix(object):
             label=labels,
             field_map=fields)
 
-    def _check_label(self, label, num_row):
+    def _check_label(self, label: Any, num_row: int) -> Optional[ndarray]:
         if label is None:
             return None
 
@@ -100,7 +105,8 @@ class DMatrix(object):
 
         return np.ascontiguousarray(label.reshape(label.size), dtype=np.float32)
 
-    def _check_field_map(self, field_map, num_col):
+    def _check_field_map(self, field_map: Any,
+                         num_col: int) -> Optional[ndarray]:
         if field_map is None:
             return None
 
@@ -123,5 +129,5 @@ class DMatrix(object):
         return np.ascontiguousarray(field_map.reshape(field_map.size), dtype=np.uint32)
 
     @property
-    def handle(self):
+    def handle(self) -> CoreDMatrix:
         return self.__handle
