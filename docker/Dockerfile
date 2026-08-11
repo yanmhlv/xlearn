@@ -25,8 +25,10 @@ RUN apt-get update && apt-get -y install \
     clang \ 
     cmake 
 
-# Install xlearn
-RUN git clone https://github.com/aksnzhy/xlearn.git 
-RUN cd xlearn && ./build.sh
+# Install xlearn. The image is meant to run on machines other than the one
+# that built it, so it takes the distributable build rather than the tuned one.
+RUN git clone https://github.com/aksnzhy/xlearn.git
+RUN cd xlearn && cmake --preset dist && cmake --build --preset dist
+RUN cd xlearn && pip install .
 
 ENTRYPOINT ["/bin/bash"]

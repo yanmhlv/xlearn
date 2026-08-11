@@ -1,0 +1,77 @@
+{
+  "version": 4,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "base",
+      "displayName": "Development build, tuned for this machine",
+      "description": "Optimized, with the tests and the benchmarks"
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug build",
+      "description": "Unoptimized and assertable, with the tests and the benchmarks",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "dist",
+      "inherits": "base",
+      "displayName": "Distributable build",
+      "description": "Runs on machines older than the one that built it",
+      "cacheVariables": {
+        "XLEARN_BUILD_TESTS": false,
+        "XLEARN_NATIVE_ARCH": false
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "Release"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "dist",
+      "configurePreset": "dist",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "base",
+      "configurePreset": "dev",
+      "configuration": "Release"
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "configurePreset": "debug",
+      "configuration": "Debug"
+    }
+  ]
+}

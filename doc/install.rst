@@ -1,10 +1,10 @@
 Installation Guide
 ----------------------------------
 
-For now, xLearn can support both Linux and Mac OS X. We will support it on Windows platform in the near 
-future. This page gives instructions on how to build and install the xLearn using ``pip`` and how to build 
-it from source code. No matter what way you choose, make sure that your OS has already installed ``GCC`` or ``Clang`` 
-(with the support of ``C++ 11``) and ``CMake``. 
+For now, xLearn can support both Linux and Mac OS X. We will support it on Windows platform in the near
+future. This page gives instructions on how to build and install the xLearn using ``pip`` and how to build
+it from source code. No matter what way you choose, make sure that your OS has already installed ``GCC`` or ``Clang``
+(with the support of ``C++ 23``) and ``CMake`` (at least v3.23).
 
 Install GCC or Clang
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -68,45 +68,41 @@ Users need to clone the code from github: ::
   git clone https://github.com/aksnzhy/xlearn.git
 
   cd xlearn
-  mkdir build
-  cd build
-  cmake ../
-  make
+  cmake --preset dev
+  cmake --build --preset dev
 
-If the building is successful, users can find two executable files (``xlearn_train`` and ``xlearn_predict``) in the ``build`` path. Users can test the installation by using the following command: ::
+Each build configuration on offer is a preset, and ``cmake --list-presets`` shows them all. The ``dev`` preset
+above tunes the binaries for the machine that builds them; build the ``dist`` preset instead when the binaries
+have to run on an older machine.
 
+If the building is successful, users can find two executable files (``xlearn_train`` and ``xlearn_predict``) in
+the ``build/dev`` path, along with the demo data. Users can test the installation by using the following command: ::
+
+  cd build/dev
   ./run_example.sh
+
+The tests are built along with the ``dev`` preset, and are run with: ::
+
+  ctest --preset dev
 
 Install Python Package
 =======================
 
 Then, you can install the Python package from the root of the repository: ::
 
-  cd ..
   python3 -m pip install .
 
-You can also test the Python package by using the following command: ::
+You can also test the Python package by using the following command, from the directory holding the dataset
+it trains on: ::
 
-  cd python-package/test
-  python test_python.py
-
-One-Button Building
-=======================
-
-We have already write a script ``build.sh`` to do all the cumbersome work for users, and users can just use the following commands: ::
-
-  git clone https://github.com/aksnzhy/xlearn.git
-
-  cd xlearn
-  sudo ./build.sh
-
-You may be asked to input your password during installation.
+  cd demo/classification/criteo_ctr
+  python3 ../../../python-package/test/test_python.py
 
 Install xLearn from pip
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 The easiest way to install xLearn Python package is to use ``pip``. The following command will 
-download the xLearn source code from pip and install Python package locally. You must make sure that you have already installed C++11 and CMake in your local machine: ::
+download the xLearn source code from pip and install Python package locally. You must make sure that you have already installed a C++23 compiler and CMake in your local machine: ::
 
     sudo pip install xlearn
 

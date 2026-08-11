@@ -1,28 +1,11 @@
-# Set output library.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/test/reader)
+xlearn_add_library(reader
+  SOURCES parser.cc file_splitor.cc reader.cc
+  DEPS xlearn::data)
 
-# Build static library
-set(STA_DEPS data base)
-add_library(reader STATIC parser.cc file_splitor.cc reader.cc)
-target_link_libraries(reader ${STA_DEPS})
+xlearn_add_test(parser_test xlearn::reader)
 
-# Build uinttests.
-if(NOT WIN32)
-set(LIBS reader data base pthread)
-else(WIN32)
-set(LIBS reader data base)
-endif()
+xlearn_add_test(reader_test xlearn::reader)
 
-xlearn_add_test(parser_test ${LIBS})
+xlearn_add_test(file_splitor_test xlearn::reader)
 
-xlearn_add_test(reader_test ${LIBS})
-
-xlearn_add_test(file_splitor_test ${LIBS})
-
-# Build benchmarks.
-xlearn_add_benchmark(parser_bench ${LIBS})
-
-# Install library and header files
-install(TARGETS reader DESTINATION lib/reader)
-FILE(GLOB HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
-install(FILES ${HEADER_FILES} DESTINATION include/reader)
+xlearn_add_benchmark(parser_bench xlearn::reader)

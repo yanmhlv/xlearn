@@ -1,19 +1,7 @@
-# Set output library.
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/test/data)
+xlearn_add_library(data
+  SOURCES model_parameters.cc
+  DEPS xlearn::base)
 
-# Build static library
-set(STA_DEPS base)
-add_library(data STATIC model_parameters.cc)
-target_link_libraries(data ${STA_DEPS})
+xlearn_add_test(data_structure_test xlearn::data)
 
-# Build unittests.
-set(LIBS data base)
-
-xlearn_add_test(data_structure_test ${LIBS})
-
-xlearn_add_test(model_parameters_test ${LIBS})
-
-# Install library and header files
-install(TARGETS data DESTINATION lib/data)
-FILE(GLOB HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
-install(FILES ${HEADER_FILES} DESTINATION include/data)
+xlearn_add_test(model_parameters_test xlearn::data)

@@ -9,6 +9,7 @@
 build/*
 build_win/*
 build_unix/*
+CMakeUserPresets.json
 .vscode/*
 .vs/*
 
