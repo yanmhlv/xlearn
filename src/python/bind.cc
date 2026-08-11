@@ -42,12 +42,12 @@ namespace nb = nanobind;
 
 namespace {
 
-using Matrix = nb::ndarray<const real_t, nb::ndim<2>,
-                           nb::c_contig, nb::device::cpu>;
-using Labels = nb::ndarray<const real_t, nb::ndim<1>,
-                           nb::c_contig, nb::device::cpu>;
-using Fields = nb::ndarray<const index_t, nb::ndim<1>,
-                           nb::c_contig, nb::device::cpu>;
+using DenseMatrix = nb::ndarray<const real_t, nb::ndim<2>,
+                                nb::c_contig, nb::device::cpu>;
+using RealVector = nb::ndarray<const real_t, nb::ndim<1>,
+                               nb::c_contig, nb::device::cpu>;
+using IndexVector = nb::ndarray<const index_t, nb::ndim<1>,
+                                nb::c_contig, nb::device::cpu>;
 using Predictions = nb::ndarray<nb::numpy, real_t, nb::ndim<1>>;
 
 //------------------------------------------------------------------------------
@@ -57,24 +57,45 @@ using Predictions = nb::ndarray<nb::numpy, real_t, nb::ndim<1>>;
 //------------------------------------------------------------------------------
 class Data {
  public:
-  Data(Matrix data,
-       std::optional<Labels> label,
-       std::optional<Fields> field_map) {
-    matrix_.has_label = label.has_value();
+  Data(DenseMatrix data,
+       std::optional<RealVector> label,
+       std::optional<IndexVector> field_map) {
     const size_t num_row = data.shape(0);
     const size_t num_col = data.shape(1);
+    AddRows(num_row, label);
     for (size_t i = 0; i < num_row; ++i) {
-      matrix_.AddRow();
-      if (label) {
-        matrix_.Y[i] = (*label)(i);
-      }
       real_t norm = 0.0;
       for (size_t j = 0; j < num_col; ++j) {
         const real_t value = data(i, j);
-        matrix_.AddNode(i, j, value, field_map ? (*field_map)(j) : 0);
         norm += value * value;
+        AddNode(i, j, value, field_map);
       }
-      matrix_.norm[i] = 1.0f / norm;
+      FinishRow(i, norm);
+    }
+  }
+
+  // The three arrays scipy.sparse.csr_matrix stores a matrix in.
+  Data(RealVector values,
+       IndexVector indices,
+       IndexVector indptr,
+       std::optional<RealVector> label,
+       std::optional<IndexVector> field_map) {
+    // Before anything is allocated: a constructor that throws leaves ~Data()
+    // unrun, and ~DMatrix() does not release the rows.
+    if (values.size() != indices.size() || indptr.size() == 0 ||
+        indptr(indptr.size() - 1) != values.size()) {
+      throw std::runtime_error("Malformed CSR arrays!");
+    }
+    const size_t num_row = indptr.size() - 1;
+    AddRows(num_row, label);
+    for (size_t i = 0; i < num_row; ++i) {
+      real_t norm = 0.0;
+      for (index_t k = indptr(i); k < indptr(i + 1); ++k) {
+        const real_t value = values(k);
+        norm += value * value;
+        AddNode(i, indices(k), value, field_map);
+      }
+      FinishRow(i, norm);
     }
   }
 
@@ -83,6 +104,33 @@ class Data {
   xLearn::DMatrix* matrix() { return &matrix_; }
 
  private:
+  void AddRows(size_t num_row, const std::optional<RealVector>& label) {
+    matrix_.has_label = label.has_value();
+    for (size_t i = 0; i < num_row; ++i) {
+      matrix_.AddRow();
+      if (label) {
+        matrix_.Y[i] = (*label)(i);
+      }
+    }
+  }
+
+  // A zero feature contributes nothing to any of the score functions, so
+  // storing one costs a Node and buys nothing.
+  void AddNode(size_t row, index_t column, real_t value,
+               const std::optional<IndexVector>& field_map) {
+    if (value == 0.0) {
+      return;
+    }
+    matrix_.AddNode(row, column, value, field_map ? (*field_map)(column) : 0);
+  }
+
+  // A row of nothing but zeros keeps the 1.0 norm AddRow() gave it.
+  void FinishRow(size_t i, real_t norm) {
+    if (norm != 0.0) {
+      matrix_.norm[i] = 1.0f / norm;
+    }
+  }
+
   xLearn::DMatrix matrix_;
 };
 
@@ -272,8 +320,13 @@ NB_MODULE(_core, m) {
     }, error.ptr());
 
   nb::class_<Data>(m, "DMatrix")
-    .def(nb::init<Matrix, std::optional<Labels>, std::optional<Fields>>(),
-         nb::arg("data"), nb::arg("label").none(), nb::arg("field_map").none());
+    .def(nb::init<DenseMatrix, std::optional<RealVector>,
+                  std::optional<IndexVector>>(),
+         nb::arg("data"), nb::arg("label").none(), nb::arg("field_map").none())
+    .def(nb::init<RealVector, IndexVector, IndexVector,
+                  std::optional<RealVector>, std::optional<IndexVector>>(),
+         nb::arg("values"), nb::arg("indices"), nb::arg("indptr"),
+         nb::arg("label").none(), nb::arg("field_map").none());
 
   nb::class_<Model> model(m, "Model");
   model

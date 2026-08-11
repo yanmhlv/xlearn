@@ -190,10 +190,13 @@ struct DMatrix {
   }
 
   // Dynamically adding new row for current DMatrix.
+  // The SparseRow is allocated here rather than on the first AddNode: a
+  // record can carry a label and no features at all, and every reader of
+  // this matrix dereferences row[i] without checking it.
   void AddRow() {
     this->Y.push_back(0);
     this->norm.push_back(1.0);
-    this->row.push_back(nullptr);
+    this->row.push_back(new SparseRow);
     row_length++;
   }
 

@@ -269,13 +269,14 @@ inline uint64 ReadFileToMemory(const std::string &filename, char **buf) {
 template <typename T>
 void WriteVectorToFile(FILE *file_ptr, const std::vector<T> &vec) {
   CHECK_NOTNULL(file_ptr);
-  // We do not want to serialize an empty vector
-  CHECK(!vec.empty());
   size_t len = vec.size();
   // First, write the length of this vector
   WriteDataToDisk(file_ptr, reinterpret_cast<char *>(&len), sizeof(len));
-  // Then, write the data of this vector
-  WriteDataToDisk(file_ptr, (char *)(vec.data()), sizeof(T)*len);
+  // Then, write the data of this vector. An empty vector is a record with no
+  // features at all, and it is only the length that has to reach the file.
+  if (len > 0) {
+    WriteDataToDisk(file_ptr, (char *)(vec.data()), sizeof(T)*len);
+  }
 }
 
 // Read a std::vector from disk file.
@@ -285,11 +286,12 @@ void ReadVectorFromFile(FILE *file_ptr, std::vector<T> &vec) {
   // First, read the length of vector
   size_t len = 0;
   ReadDataFromDisk(file_ptr, reinterpret_cast<char *>(&len), sizeof(len));
-  CHECK_GT(len, 0);
   // Clear the original vector
   std::vector<T>().swap(vec);
   vec.resize(len);
-  ReadDataFromDisk(file_ptr, reinterpret_cast<char *>(vec.data()), sizeof(T)*len);
+  if (len > 0) {
+    ReadDataFromDisk(file_ptr, reinterpret_cast<char *>(vec.data()), sizeof(T)*len);
+  }
 }
 
 // Write a std:string to disk file.
