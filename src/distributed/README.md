@@ -1,1 +1,0 @@
-The high-performance and stable distributed training will be release in the next version.
