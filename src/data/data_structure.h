@@ -50,7 +50,7 @@ typedef uint32 index_t;
 typedef std::unordered_map<index_t, index_t> feature_map;
 
 //------------------------------------------------------------------------------
-// We use SSE to accelerate our training, and hence some 
+// We use SIMD to accelerate our training, and hence some
 // parameters will be aligned.
 //------------------------------------------------------------------------------
 const int kAlign = 4;

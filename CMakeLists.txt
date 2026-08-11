@@ -28,6 +28,25 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 #-------------------------------------------------------------------------------
+# Google Highway supplies the portable SIMD layer (src/base/simd.h).
+# It is declared before our own compile flags below so that it is built
+# with its own, which is what its runtime target dispatch relies on.
+#-------------------------------------------------------------------------------
+include(FetchContent)
+set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(highway
+  GIT_REPOSITORY https://github.com/google/highway.git
+  GIT_TAG 1.4.0
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(highway)
+# xlearn_api_shared links it into a shared library.
+set_property(TARGET hwy PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+#-------------------------------------------------------------------------------
 # Take almost all warnings;
 # Do not generate debug symbols;
 # Optimization level 3;

@@ -2,13 +2,13 @@
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/test/score)
 
 # Build static library
-set(STA_DEPS data base)
-add_library(score STATIC score_function.cc 
+set(STA_DEPS data base hwy)
+add_library(score STATIC score_function.cc
 linear_score.cc fm_score.cc ffm_score.cc)
 target_link_libraries(score ${STA_DEPS})
 
 # Build uinttests
-set(LIBS score data base gtest)
+set(LIBS score data base hwy gtest)
 
 add_executable(score_function_test score_function_test.cc)
 target_link_libraries(score_function_test gtest_main ${LIBS})
@@ -21,6 +21,12 @@ target_link_libraries(fm_score_test gtest_main ${LIBS})
 
 add_executable(ffm_score_test ffm_score_test.cc)
 target_link_libraries(ffm_score_test gtest_main ${LIBS})
+
+# Build benchmarks.
+add_executable(score_bench score_bench.cc)
+target_link_libraries(score_bench score data base)
+set_target_properties(score_bench PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bench)
 
 # Install library and header files
 install(TARGETS score DESTINATION lib/score)

@@ -8,7 +8,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/test/c_api)
 endif()
 
 # Build static library
-set(STA_DEPS solver reader loss score data base)
+set(STA_DEPS solver reader loss score data base hwy)
 add_library(xlearn_api STATIC c_api.cc c_api_error.cc)
 target_link_libraries(xlearn_api ${STA_DEPS})
 
@@ -25,6 +25,8 @@ add_library(xlearn_api_shared SHARED c_api.cc c_api_error.cc
 ../solver/checker.cc ../solver/trainer.cc 
 ../solver/inference.cc ../solver/solver.cc)
 
+target_link_libraries(xlearn_api_shared hwy)
+
 if(WIN32)
 target_link_libraries(xlearn_api_shared Ws2_32)
 endif()
@@ -36,9 +38,9 @@ set_target_properties(xlearn_api PROPERTIES CLEAN_DIRECT_OUTPUT 1)
 
 # Build unittests.
 if(NOT WIN32)
-set(LIBS xlearn_api solver reader loss score data base pthread gtest)
+set(LIBS xlearn_api solver reader loss score data base hwy pthread gtest)
 else(WIN32)
-set(LIBS xlearn_api solver reader loss score data base gtest)
+set(LIBS xlearn_api solver reader loss score data base hwy gtest)
 endif()
 
 add_executable(c_api_test c_api_test.cc)

@@ -21,7 +21,6 @@ This file is the implementation of the Model class.
 #include "src/data/model_parameters.h"
 
 #include <string.h>
-#include <pmmintrin.h>  // for SSE
 
 #include "src/base/file_util.h"
 #include "src/base/format_print.h"
@@ -76,9 +75,9 @@ void Model::Initialize(const std::string& score_func,
   this->initial(true);
 }
 
-// To get the best performance for SSE, we need to
+// To get the best performance for SIMD, we need to
 // allocate memory for the model parameters in aligned way.
-// For SSE, the align number should be 16 byte (kAlignByte).
+// For SIMD, the align number should be 16 byte (kAlignByte).
 void Model::initial(bool set_val) {
   try {
     // Conventional malloc for linear term and bias
