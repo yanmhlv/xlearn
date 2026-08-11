@@ -38,13 +38,12 @@ set_target_properties(xlearn_api PROPERTIES CLEAN_DIRECT_OUTPUT 1)
 
 # Build unittests.
 if(NOT WIN32)
-set(LIBS xlearn_api solver reader loss score data base hwy pthread gtest)
+set(LIBS xlearn_api solver reader loss score data base hwy pthread)
 else(WIN32)
-set(LIBS xlearn_api solver reader loss score data base hwy gtest)
+set(LIBS xlearn_api solver reader loss score data base hwy)
 endif()
 
-add_executable(c_api_test c_api_test.cc)
-target_link_libraries(c_api_test gtest_main ${LIBS})
+xlearn_add_test(c_api_test ${LIBS})
 
 # Install library and header files
 install(TARGETS xlearn_api DESTINATION lib/c_api)
