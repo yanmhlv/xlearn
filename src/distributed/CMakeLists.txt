@@ -7,10 +7,9 @@ add_library(distributed STATIC parameter_server.cc)
 target_link_libraries(distributed ${STA_DEPS})
 
 # Build unittests.
-set(LIBS distributed data base gtest)
+set(LIBS distributed data base)
 
-add_executable(parameter_server_test parameter_server_test.cc)
-target_link_libraries(parameter_server_test gtest_main ${LIBS})
+xlearn_add_test(parameter_server_test ${LIBS})
 
 # Install library and header files
 install(TARGETS distributed DESTINATION lib/distributed)

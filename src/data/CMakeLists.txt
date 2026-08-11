@@ -7,13 +7,11 @@ add_library(data STATIC model_parameters.cc)
 target_link_libraries(data ${STA_DEPS})
 
 # Build unittests.
-set(LIBS data base gtest)
+set(LIBS data base)
 
-add_executable(data_structure_test data_structure_test.cc)
-target_link_libraries(data_structure_test gtest_main ${LIBS})
+xlearn_add_test(data_structure_test ${LIBS})
 
-add_executable(model_parameters_test model_parameters_test.cc)
-target_link_libraries(model_parameters_test gtest_main ${LIBS})
+xlearn_add_test(model_parameters_test ${LIBS})
 
 # Install library and header files
 install(TARGETS data DESTINATION lib/data)

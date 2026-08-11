@@ -8,19 +8,19 @@ target_link_libraries(reader ${STA_DEPS})
 
 # Build uinttests.
 if(NOT WIN32)
-set(LIBS reader data base pthread gtest)
+set(LIBS reader data base pthread)
 else(WIN32)
-set(LIBS reader data base gtest)
+set(LIBS reader data base)
 endif()
 
-add_executable(parser_test parser_test.cc)
-target_link_libraries(parser_test gtest_main ${LIBS})
+xlearn_add_test(parser_test ${LIBS})
 
-add_executable(reader_test reader_test.cc)
-target_link_libraries(reader_test gtest_main ${LIBS})
+xlearn_add_test(reader_test ${LIBS})
 
-add_executable(file_splitor_test file_splitor_test.cc)
-target_link_libraries(file_splitor_test gtest_main ${LIBS})
+xlearn_add_test(file_splitor_test ${LIBS})
+
+# Build benchmarks.
+xlearn_add_benchmark(parser_bench ${LIBS})
 
 # Install library and header files
 install(TARGETS reader DESTINATION lib/reader)

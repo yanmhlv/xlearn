@@ -189,7 +189,7 @@ class Model {
   Field id is start from 0 */
   index_t  num_field_;
   /* Number of K (used in fm and ffm)
-  Because we use SSE, so the real k should be aligned.
+  Because we use SIMD, so the real k should be aligned.
   User can get the aligned K by using get_aligned_k() */
   index_t  num_K_;
   /* Auxiliary memory size for different optimization method

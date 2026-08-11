@@ -18,15 +18,14 @@
 This file is the implementation of FFMScore class.
 */
 
-#include <pmmintrin.h>  // for SSE
-
 #include "src/score/ffm_score.h"
 #include "src/base/math.h"
+#include "src/base/simd.h"
 
 namespace xLearn {
 
 // y = sum( (V_i_fj*V_j_fi)(x_i * x_j) )
-// Using SSE to accelerate vector operation.
+// Using SIMD to accelerate vector operation.
 real_t FFMScore::CalcScore(const SparseRow* row,
                            Model& model,
                            real_t norm) {
@@ -56,7 +55,11 @@ real_t FFMScore::CalcScore(const SparseRow* row,
   index_t align1 = num_field * align0;
   int align = kAlign * aux_size;
   w = model.GetParameter_v();
-  __m128 XMMt = _mm_setzero_ps();
+  const index_t unrolled_end = align0 - align0 % (4*align);
+  Float4 total0 = Float4::Zero();
+  Float4 total1 = Float4::Zero();
+  Float4 total2 = Float4::Zero();
+  Float4 total3 = Float4::Zero();
   for (SparseRow::const_iterator iter_i = row->begin();
        iter_i != row->end(); ++iter_i) {
     index_t j1 = iter_i->feat_id;
@@ -73,26 +76,33 @@ real_t FFMScore::CalcScore(const SparseRow* row,
       real_t v2 = iter_j->feat_val;
       real_t* w1_base = w + j1*align1 + f2*align0;
       real_t* w2_base = w + j2*align1 + f1*align0;
-      __m128 XMMv = _mm_set1_ps(v1*v2*norm);
-      for (index_t d = 0; d < align0; d += align) {
-        __m128 XMMw1 = _mm_load_ps(w1_base + d);
-        __m128 XMMw2 = _mm_load_ps(w2_base + d);
-        XMMt = _mm_add_ps(XMMt,
-               _mm_mul_ps(
-               _mm_mul_ps(XMMw1, XMMw2), XMMv));
+      Float4 val = Float4::Broadcast(v1*v2*norm);
+      auto accumulate = [&](Float4 acc, index_t d) {
+        return MulAdd(Float4::Load(w1_base + d) * Float4::Load(w2_base + d),
+                      val, acc);
+      };
+      index_t d = 0;
+      for (; d < unrolled_end; d += 4*align) {
+        total0 = accumulate(total0, d);
+        total1 = accumulate(total1, d + align);
+        total2 = accumulate(total2, d + 2*align);
+        total3 = accumulate(total3, d + 3*align);
+      }
+      // A short K leaves only this tail, and with no second chain to hide it
+      // a fused multiply-add would just lengthen the one accumulator.
+      for (; d < align0; d += align) {
+        total0 = total0 + Float4::Load(w1_base + d)
+                          * Float4::Load(w2_base + d) * val;
       }
     }
   }
-  real_t sum_v = 0;
-  XMMt = _mm_hadd_ps(XMMt, XMMt);
-  XMMt = _mm_hadd_ps(XMMt, XMMt);
-  _mm_store_ss(&sum_v, XMMt);
+  real_t sum_v = ((total0 + total1) + (total2 + total3)).Sum();
 
   return sum_v + sum_w;
 }
 
 // Calculate gradient and update current model.
-// Using the SSE to accelerate vector operation.
+// Using the SIMD to accelerate vector operation.
 void FFMScore::CalcGrad(const SparseRow* row,
                         Model& model,
                         real_t pg,
@@ -148,9 +158,9 @@ void FFMScore::calc_grad_sgd(const SparseRow* row,
   index_t align1 = model.GetNumField() * align0;
   index_t align = kAlign * model.GetAuxiliarySize();
   w = model.GetParameter_v();
-  __m128 XMMpg = _mm_set1_ps(pg);
-  __m128 XMMlr = _mm_set1_ps(learning_rate_);
-  __m128 XMMlamb = _mm_set1_ps(regu_lambda_);
+  Float4 pg_all = Float4::Broadcast(pg);
+  Float4 lr = Float4::Broadcast(learning_rate_);
+  Float4 lamb = Float4::Broadcast(regu_lambda_);
   for (SparseRow::const_iterator iter_i = row->begin();
        iter_i != row->end(); ++iter_i) {
     index_t j1 = iter_i->feat_id;
@@ -167,23 +177,17 @@ void FFMScore::calc_grad_sgd(const SparseRow* row,
       real_t v2 = iter_j->feat_val;
       real_t* w1_base = w + j1*align1 + f2*align0;
       real_t* w2_base = w + j2*align1 + f1*align0;
-      __m128 XMMv = _mm_set1_ps(v1*v2*norm);
-      __m128 XMMpgv = _mm_mul_ps(XMMv, XMMpg);
+      Float4 val = Float4::Broadcast(v1*v2*norm);
+      Float4 pgv = val * pg_all;
       for (index_t d = 0; d < align0; d += align) {
         real_t *w1 = w1_base + d;
         real_t *w2 = w2_base + d;
-        __m128 XMMw1 = _mm_load_ps(w1);
-        __m128 XMMw2 = _mm_load_ps(w2);
-        __m128 XMMg1 = _mm_add_ps(
-                       _mm_mul_ps(XMMlamb, XMMw1),
-                       _mm_mul_ps(XMMpgv, XMMw2));
-        __m128 XMMg2 = _mm_add_ps(
-                       _mm_mul_ps(XMMlamb, XMMw2),
-                       _mm_mul_ps(XMMpgv, XMMw1));
-        XMMw1 = _mm_sub_ps(XMMw1, _mm_mul_ps(XMMlr, XMMg1));
-        XMMw2 = _mm_sub_ps(XMMw2, _mm_mul_ps(XMMlr, XMMg2));
-        _mm_store_ps(w1, XMMw1);
-        _mm_store_ps(w2, XMMw2);
+        Float4 weight1 = Float4::Load(w1);
+        Float4 weight2 = Float4::Load(w2);
+        Float4 grad1 = MulAdd(lamb, weight1, pgv * weight2);
+        Float4 grad2 = MulAdd(lamb, weight2, pgv * weight1);
+        NegMulAdd(lr, grad1, weight1).Store(w1);
+        NegMulAdd(lr, grad2, weight2).Store(w2);
       }
     }
   }
@@ -228,9 +232,9 @@ void FFMScore::calc_grad_adagrad(const SparseRow* row,
   index_t align1 = model.GetNumField() * align0;
   index_t align = kAlign * 2;
   w = model.GetParameter_v();
-  __m128 XMMpg = _mm_set1_ps(pg);
-  __m128 XMMlr = _mm_set1_ps(learning_rate_);
-  __m128 XMMlamb = _mm_set1_ps(regu_lambda_);
+  Float4 pg_all = Float4::Broadcast(pg);
+  Float4 lr = Float4::Broadcast(learning_rate_);
+  Float4 lamb = Float4::Broadcast(regu_lambda_);
   for (SparseRow::const_iterator iter_i = row->begin();
        iter_i != row->end(); ++iter_i) {
     index_t j1 = iter_i->feat_id;
@@ -247,33 +251,25 @@ void FFMScore::calc_grad_adagrad(const SparseRow* row,
       real_t v2 = iter_j->feat_val;
       real_t* w1_base = w + j1*align1 + f2*align0;
       real_t* w2_base = w + j2*align1 + f1*align0;
-      __m128 XMMv = _mm_set1_ps(v1*v2*norm);
-      __m128 XMMpgv = _mm_mul_ps(XMMv, XMMpg);
+      Float4 val = Float4::Broadcast(v1*v2*norm);
+      Float4 pgv = val * pg_all;
       for (index_t d = 0; d < align0; d += align) {
         real_t *w1 = w1_base + d;
         real_t *w2 = w2_base + d;
         real_t *wg1 = w1 + kAlign;
         real_t *wg2 = w2 + kAlign;
-        __m128 XMMw1 = _mm_load_ps(w1);
-        __m128 XMMw2 = _mm_load_ps(w2);
-        __m128 XMMwg1 = _mm_load_ps(wg1);
-        __m128 XMMwg2 = _mm_load_ps(wg2);
-        __m128 XMMg1 = _mm_add_ps(
-                       _mm_mul_ps(XMMlamb, XMMw1),
-                       _mm_mul_ps(XMMpgv, XMMw2));
-        __m128 XMMg2 = _mm_add_ps(
-                       _mm_mul_ps(XMMlamb, XMMw2),
-                       _mm_mul_ps(XMMpgv, XMMw1));
-        XMMwg1 = _mm_add_ps(XMMwg1, _mm_mul_ps(XMMg1, XMMg1));
-        XMMwg2 = _mm_add_ps(XMMwg2, _mm_mul_ps(XMMg2, XMMg2));
-        XMMw1 = _mm_sub_ps(XMMw1, _mm_mul_ps(XMMlr,
-                _mm_mul_ps(_mm_rsqrt_ps(XMMwg1), XMMg1)));
-        XMMw2 = _mm_sub_ps(XMMw2, _mm_mul_ps(XMMlr,
-                _mm_mul_ps(_mm_rsqrt_ps(XMMwg2), XMMg2)));
-        _mm_store_ps(w1, XMMw1);
-        _mm_store_ps(w2, XMMw2);
-        _mm_store_ps(wg1, XMMwg1);
-        _mm_store_ps(wg2, XMMwg2);
+        Float4 weight1 = Float4::Load(w1);
+        Float4 weight2 = Float4::Load(w2);
+        Float4 weight_grad1 = Float4::Load(wg1);
+        Float4 weight_grad2 = Float4::Load(wg2);
+        Float4 grad1 = MulAdd(lamb, weight1, pgv * weight2);
+        Float4 grad2 = MulAdd(lamb, weight2, pgv * weight1);
+        weight_grad1 = MulAdd(grad1, grad1, weight_grad1);
+        weight_grad2 = MulAdd(grad2, grad2, weight_grad2);
+        NegMulAdd(lr, RSqrt(weight_grad1) * grad1, weight1).Store(w1);
+        NegMulAdd(lr, RSqrt(weight_grad2) * grad2, weight2).Store(w2);
+        weight_grad1.Store(wg1);
+        weight_grad2.Store(wg2);
       }
     }
   }
@@ -338,9 +334,11 @@ void FFMScore::calc_grad_ftrl(const SparseRow* row,
   index_t align1 = model.GetNumField() * align0;
   index_t align = kAlign * 3;
   w = model.GetParameter_v();
-  __m128 XMMpg = _mm_set1_ps(pg);
-  __m128 XMMalpha = _mm_set1_ps(alpha_);
-  __m128 XMML2 = _mm_set1_ps(lambda_2_);
+  Float4 pg_all = Float4::Broadcast(pg);
+  Float4 alpha = Float4::Broadcast(alpha_);
+  Float4 beta = Float4::Broadcast(beta_);
+  Float4 l1 = Float4::Broadcast(lambda_1_);
+  Float4 l2 = Float4::Broadcast(lambda_2_);
   for (SparseRow::const_iterator iter_i = row->begin();
        iter_i != row->end(); ++iter_i) {
     index_t j1 = iter_i->feat_id;
@@ -357,8 +355,8 @@ void FFMScore::calc_grad_ftrl(const SparseRow* row,
       real_t v2 = iter_j->feat_val;
       real_t* w1_base = w + j1*align1 + f2*align0;
       real_t* w2_base = w + j2*align1 + f1*align0;
-      __m128 XMMv = _mm_set1_ps(v1*v2*norm);
-      __m128 XMMpgv = _mm_mul_ps(XMMv, XMMpg);
+      Float4 val = Float4::Broadcast(v1*v2*norm);
+      Float4 pgv = val * pg_all;
       for (index_t d = 0; d < align0; d += align) {
         real_t *w1 = w1_base + d;
         real_t *w2 = w2_base + d;
@@ -366,65 +364,38 @@ void FFMScore::calc_grad_ftrl(const SparseRow* row,
         real_t *wg2 = w2 + kAlign;
         real_t *z1 = w1 + kAlign * 2;
         real_t *z2 = w2 + kAlign * 2;
-        __m128 XMMw1 = _mm_load_ps(w1);
-        __m128 XMMw2 = _mm_load_ps(w2);
-        __m128 XMMwg1 = _mm_load_ps(wg1);
-        __m128 XMMwg2 = _mm_load_ps(wg2);
-        __m128 XMMz1 = _mm_load_ps(z1);
-        __m128 XMMz2 = _mm_load_ps(z2);
-        __m128 XMMg1 = _mm_add_ps(
-                       _mm_mul_ps(XMML2, XMMw1),
-                       _mm_mul_ps(XMMpgv, XMMw2));
-        __m128 XMMg2 = _mm_add_ps(
-                       _mm_mul_ps(XMML2, XMMw2),
-                       _mm_mul_ps(XMMpgv, XMMw1));
-        __m128 XMMsigma1 = _mm_div_ps(
-                           _mm_sub_ps(
-                           _mm_sqrt_ps(
-                           _mm_add_ps(XMMwg1,
-                           _mm_mul_ps(XMMg1, XMMg1))),
-                           _mm_sqrt_ps(XMMwg1)), XMMalpha);
-        __m128 XMMsigma2 = _mm_div_ps(
-                           _mm_sub_ps(
-                           _mm_sqrt_ps(
-                           _mm_add_ps(XMMwg2,
-                           _mm_mul_ps(XMMg2, XMMg2))),
-                           _mm_sqrt_ps(XMMwg2)), XMMalpha);
-        XMMz1 = _mm_add_ps(XMMz1,
-                _mm_sub_ps(XMMg1,
-                _mm_mul_ps(XMMsigma1, XMMw1)));
-        XMMz2 = _mm_add_ps(XMMz2,
-                _mm_sub_ps(XMMg2,
-                _mm_mul_ps(XMMsigma2, XMMw2)));
-        _mm_store_ps(z1, XMMz1);
-        _mm_store_ps(z2, XMMz2);
-        XMMwg1 = _mm_add_ps(XMMwg1,
-                 _mm_mul_ps(XMMg1, XMMg1));
-        XMMwg2 = _mm_add_ps(XMMwg2,
-                 _mm_mul_ps(XMMg2, XMMg2));
-        _mm_store_ps(wg1, XMMwg1);
-        _mm_store_ps(wg2, XMMwg2);
-        // Update w. SSE may not faster
-        for (size_t i = 0; i < kAlign; ++i) {
-          // w1
-          real_t z1_value = *(z1+i);
-          int sign = z1_value > 0 ? 1 : -1;
-          if (sign * z1_value <= lambda_1_) {
-            *(w1+i) = 0;
-          } else {
-            *(w1+i) = (sign*lambda_1_-z1_value) / 
-              ((beta_ + sqrt(*(wg1+i))) / alpha_ + lambda_2_);
-          }
-          // w2
-          real_t z2_value = *(z2+i);
-          sign = z2_value > 0 ? 1 : -1;
-          if (sign * z2_value <= lambda_1_) {
-            *(w2+i) = 0;
-          } else {
-            *(w2+i) = (sign*lambda_1_-z2_value) / 
-              ((beta_ + sqrt(*(wg2+i))) / alpha_ + lambda_2_);
-          }
-        }
+        Float4 weight1 = Float4::Load(w1);
+        Float4 weight2 = Float4::Load(w2);
+        Float4 weight_grad1 = Float4::Load(wg1);
+        Float4 weight_grad2 = Float4::Load(wg2);
+        Float4 z_val1 = Float4::Load(z1);
+        Float4 z_val2 = Float4::Load(z2);
+        Float4 grad1 = MulAdd(l2, weight1, pgv * weight2);
+        Float4 grad2 = MulAdd(l2, weight2, pgv * weight1);
+        Float4 grad_sq1 = grad1 * grad1;
+        Float4 grad_sq2 = grad2 * grad2;
+        Float4 sigma1 = (Sqrt(weight_grad1 + grad_sq1)
+                         - Sqrt(weight_grad1)) / alpha;
+        Float4 sigma2 = (Sqrt(weight_grad2 + grad_sq2)
+                         - Sqrt(weight_grad2)) / alpha;
+        z_val1 = NegMulAdd(sigma1, weight1, z_val1 + grad1);
+        z_val2 = NegMulAdd(sigma2, weight2, z_val2 + grad2);
+        z_val1.Store(z1);
+        z_val2.Store(z2);
+        weight_grad1 = weight_grad1 + grad_sq1;
+        weight_grad2 = weight_grad2 + grad_sq2;
+        weight_grad1.Store(wg1);
+        weight_grad2.Store(wg2);
+        // Update w. Where |z| is inside the l1 band the weight is driven to
+        // zero, so the branch becomes a select over the whole vector.
+        Float4 numerator1 = CopySign(l1, z_val1) - z_val1;
+        Float4 numerator2 = CopySign(l1, z_val2) - z_val2;
+        Float4 denominator1 = (beta + Sqrt(weight_grad1)) / alpha + l2;
+        Float4 denominator2 = (beta + Sqrt(weight_grad2)) / alpha + l2;
+        IfThenZeroElse(Abs(z_val1) <= l1,
+                       numerator1 / denominator1).Store(w1);
+        IfThenZeroElse(Abs(z_val2) <= l1,
+                       numerator2 / denominator2).Store(w2);
       }
     }
   }

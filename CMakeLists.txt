@@ -28,6 +28,55 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 #-------------------------------------------------------------------------------
+# The dependencies below carry no compile flags of ours, so without a build
+# type they would be built unoptimized -- which Google Benchmark reports as
+# "Library was built as DEBUG" and which taints every timing it produces.
+#-------------------------------------------------------------------------------
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+#-------------------------------------------------------------------------------
+# Third-party dependencies. They are declared before our own compile flags
+# below so that each is built with its own: Highway in particular relies on
+# choosing its instruction sets itself.
+#-------------------------------------------------------------------------------
+include(FetchContent)
+
+# The portable SIMD layer behind src/base/simd.h.
+set(HWY_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_CONTRIB OFF CACHE BOOL "" FORCE)
+set(HWY_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(highway
+  GIT_REPOSITORY https://github.com/google/highway.git
+  GIT_TAG 1.4.0
+  GIT_SHALLOW TRUE
+)
+
+FetchContent_Declare(googletest
+  GIT_REPOSITORY https://github.com/google/googletest.git
+  GIT_TAG v1.18.0
+  GIT_SHALLOW TRUE
+)
+
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(benchmark
+  GIT_REPOSITORY https://github.com/google/benchmark.git
+  GIT_TAG v1.9.5
+  GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(highway googletest benchmark)
+# xlearn_api_shared links it into a shared library.
+set_property(TARGET hwy PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+enable_testing()
+
+#-------------------------------------------------------------------------------
 # Take almost all warnings;
 # Do not generate debug symbols;
 # Optimization level 3;
@@ -56,8 +105,29 @@ set(CMAKE_INSTALL_PREFIX "xLearn")
 include_directories(
   "${PROJECT_SOURCE_DIR}"
   "${PROJECT_BINARY_DIR}"
-  "${PROJECT_SOURCE_DIR}/gtest/include"
 )
+
+#-------------------------------------------------------------------------------
+# Declaring a test or a benchmark.
+#
+# A test binary is one ctest entry rather than one entry per test case: the
+# tests write scratch files into their working directory under fixed names, so
+# the cases within a binary have to keep running in sequence.
+#-------------------------------------------------------------------------------
+function(xlearn_add_test name)
+  add_executable(${name} ${name}.cc)
+  target_link_libraries(${name} GTest::gtest_main ${ARGN})
+  add_test(NAME ${name}
+           COMMAND ${name}
+           WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+endfunction()
+
+function(xlearn_add_benchmark name)
+  add_executable(${name} ${name}.cc)
+  target_link_libraries(${name} benchmark::benchmark ${ARGN})
+  set_target_properties(${name} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bench)
+endfunction()
 
 link_directories(
   "${PROJECT_BINARY_DIR}/src/base"
@@ -72,7 +142,6 @@ link_directories(
 #-------------------------------------------------------------------------------
 # Declare packages in xLearn project.
 #-------------------------------------------------------------------------------
-add_subdirectory(gtest)
 add_subdirectory(demo)
 add_subdirectory(scripts)
 add_subdirectory(src/base)

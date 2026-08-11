@@ -7,19 +7,16 @@ levenshtein_distance.cc timer.cc format_print.cc)
 
 # Build unittests.
 if(NOT WIN32)
-set(LIBS base pthread gtest)
+set(LIBS base pthread)
 else(WIN32)
-set(LIBS base gtest)
+set(LIBS base)
 endif()
 
-add_executable(levenshtein_distance_test levenshtein_distance_test.cc)
-target_link_libraries(levenshtein_distance_test gtest_main ${LIBS})
+xlearn_add_test(levenshtein_distance_test ${LIBS})
 
-add_executable(file_util_test file_util_test.cc)
-target_link_libraries(file_util_test gtest_main ${LIBS})
+xlearn_add_test(file_util_test ${LIBS})
 
-add_executable(thread_pool_test thread_pool_test.cc)
-target_link_libraries(thread_pool_test gtest_main ${LIBS})
+xlearn_add_test(thread_pool_test ${LIBS})
 
 # Install library and header files
 install(TARGETS base DESTINATION lib/base)
