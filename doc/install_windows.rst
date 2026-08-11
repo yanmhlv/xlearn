@@ -1,23 +1,23 @@
 Installation Guide for Windows
 ----------------------------------
 
-For now, xLearn can support Windows. This page gives instructions on how to build and install the xLearn from source code on Windows. Before starting,  make sure that your Windows has already installed  ``Visual Studio 2017`` and ``CMake``. 
+For now, xLearn can support Windows. This page gives instructions on how to build and install the xLearn from source code on Windows. Before starting,  make sure that your Windows has already installed  ``Visual Studio`` (2022 or newer, for the C++23 support) and ``CMake``.
 
-Install Visual Studio 2017
+Install Visual Studio
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 *If you have already installed your C++ compiler before, you can skip this step.*
 
-Download Visual Studio ``vs_xxxx_xxxx.exe`` from https://visualstudio.microsoft.com/downloads/, then you can follow the VS2017 install guide
-https://docs.microsoft.com/en-us/visualstudio/install/install-visual-studio?view=vs-2017. Users should make sure that choose the c++
-development tools when install VS2017.
- 
+Download Visual Studio ``vs_xxxx_xxxx.exe`` from https://visualstudio.microsoft.com/downloads/, then you can follow the install guide
+https://docs.microsoft.com/en-us/visualstudio/install/install-visual-studio. Users should make sure that choose the c++
+development tools when install Visual Studio.
+
 Install CMake
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
 *If you have already installed CMake before, you can skip this step.*
 
-Download latest(at least v3.10) package for windows from https://cmake.org/download/ and then install it. whether you choose ``.msi`` or ``.zip`` package, 
+Download latest(at least v3.23) package for windows from https://cmake.org/download/ and then install it. whether you choose ``.msi`` or ``.zip`` package,
 you should make sure that cmake is added to your system path.
 
 Install xLearn from Source Code
@@ -31,65 +31,40 @@ from the same C++ code.
 
 Build from Source Code
 =======================
-First, users should enter DOS as Administrator. 
-Then, users need to clone the code from github: ::
+Users need to clone the code from github: ::
 
   git clone https://github.com/aksnzhy/xlearn.git
 
   cd xlearn
-  mkdir build
-  cd build
-  cmake -G "Visual Studio 15 Win64" ../
-  "C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
-  MSBuild xLearn.sln /p:Configuration=Release
-  
-**Note:** You should replace this path ``"C:\Program Files (x86)\Microsoft Visual Studio\2017\Enterprise\VC\Auxiliary\Build\vcvarsall.bat"``
-to yourself installation path of VS2017.
+  cmake --preset dev
+  cmake --build --preset dev
 
-Suppose you install the VS Community version, the path should be ``"C:\Program Files (x86)\Microsoft Visual Studio\2017\Community\VC\Auxiliary\Build\vcvarsall.bat"``
-if you install it in default path.
+Each build configuration on offer is a preset, and ``cmake --list-presets`` shows them all. The ``dev`` preset
+above tunes the binaries for the machine that builds them; build the ``dist`` preset instead when the binaries
+have to run on an older machine.
 
-If the building is successful, users can find two executable files (``xlearn_train.exe`` and ``xlearn_predict.exe``) in the ``build\Release`` path. 
-Users can test the installation by using the following command: ::
+If the building is successful, users can find two executable files (``xlearn_train.exe`` and ``xlearn_predict.exe``) in the ``build\dev`` path,
+along with the demo data. Users can test the installation by using the following command: ::
 
+  cd build\dev
   run_example.bat
 
-Build from Visual Studio solution
-=======================
-This build method is optional for Build from Source Code, if you already use method above, you can skip this part.
+The tests are built along with the ``dev`` preset, and are run with: ::
 
-We support an Visual Studio(vs) solution for users, it's in the directory ``windows`` which is in root of xLearn project. 
-
-There are two vs project in this solution: ``xlearn_train`` and ``xlearn_test``, respectively relation to build executable train and predict entry program.
-
-Users should make sure that your vs platform toolset is greater than v141(It works well if you use vs2017).
-
-**Note:** Files compiling from this solution is different from cmake solution, because of different structure.
+  ctest --preset dev
 
 Install Python Package
 =======================
 
 Then, you can install the Python package from the root of the repository: ::
 
-  cd ..
   python -m pip install .
 
-You can also test the Python package by using the following command: ::
+You can also test the Python package by using the following command, from the directory holding the dataset
+it trains on: ::
 
-  cd python-package\test
-  python test_python.py
-
-One-Button Building
-=======================
-
-We have already write a script ``build.bat`` to do all the cumbersome work for users, and users can just use the folloing commands: ::
-
-  git clone https://github.com/aksnzhy/xlearn.git
-
-  cd xlearn
-  build.bat
-
-You should make sure that you enter DOS as Administrator.
+  cd demo\classification\criteo_ctr
+  python ..\..\..\python-package\test\test_python.py
 
 Install xLearn from pip
 ^^^^^^^^^^^^^^^^^^^^^^^^

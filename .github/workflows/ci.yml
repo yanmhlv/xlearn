@@ -16,14 +16,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # -march=native is left on: the binaries never leave the runner.
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake --preset dev
 
       - name: Build
-        run: cmake --build build --config Release -j 4
+        run: cmake --build --preset dev -j 4
 
       - name: Test
-        run: ctest --test-dir build --build-config Release --output-on-failure
+        run: ctest --preset dev
 
   python:
     name: Python

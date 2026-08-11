@@ -1,7 +1,8 @@
 if(WIN32)
-FILE(COPY "${CMAKE_CURRENT_SOURCE_DIR}/run_example.bat"
-DESTINATION ${PROJECT_BINARY_DIR}/)
+  set(runner run_example.bat)
 else()
-FILE(COPY "${CMAKE_CURRENT_SOURCE_DIR}/run_example.sh"
-DESTINATION ${PROJECT_BINARY_DIR}/)
+  set(runner run_example.sh)
 endif()
+
+file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/${runner}"
+     DESTINATION "${PROJECT_BINARY_DIR}")

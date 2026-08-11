@@ -14,12 +14,7 @@ string(STRIP "${XLEARN_VERSION}" XLEARN_VERSION)
 nanobind_add_module(_core STABLE_ABI NB_STATIC bind.cc)
 target_compile_definitions(_core PRIVATE XLEARN_VERSION="${XLEARN_VERSION}")
 
-if(NOT WIN32)
-set(LIBS solver reader loss score data base hwy pthread)
-else(WIN32)
-set(LIBS solver reader loss score data base hwy Ws2_32)
-endif()
-target_link_libraries(_core PRIVATE ${LIBS})
+target_link_libraries(_core PRIVATE xlearn::solver)
 
 install(TARGETS _core LIBRARY DESTINATION xlearn)
 
