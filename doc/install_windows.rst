@@ -25,8 +25,9 @@ Install xLearn from Source Code
 
 Building xLearn from source code consists two steps:
 
-First, you need to build the executable files (``xlearn_train.exe`` and ``xlearn_predict.exe``), as well as the 
-shared library (``xlearn_api.dll`` for Windows) from the C++ code. After that, users need to install the xLearn Python Package.
+First, you need to build the executable files (``xlearn_train.exe`` and ``xlearn_predict.exe``) from the C++ code.
+After that, users need to install the xLearn Python Package, which builds the extension module it needs
+from the same C++ code.
 
 Build from Source Code
 =======================
@@ -68,14 +69,14 @@ Users should make sure that your vs platform toolset is greater than v141(It wor
 Install Python Package
 =======================
 
-Then, you can install the Python package through ``install-python.sh``: ::
+Then, you can install the Python package from the root of the repository: ::
 
-  cd python-package
-  python setup.py install 
+  cd ..
+  python -m pip install .
 
 You can also test the Python package by using the following command: ::
 
-  cd ../
+  cd python-package\test
   python test_python.py
 
 One-Button Building

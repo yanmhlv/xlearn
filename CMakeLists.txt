@@ -27,6 +27,15 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(XLEARN_BUILD_TESTS "Build the tests and benchmarks" ON)
+option(XLEARN_BUILD_PYTHON "Build the xlearn._core Python extension" OFF)
+option(XLEARN_NATIVE_ARCH "Tune the build for the building machine" ON)
+
+if(XLEARN_BUILD_PYTHON)
+  # The static libraries below are linked into the extension module.
+  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 #-------------------------------------------------------------------------------
 # The dependencies below carry no compile flags of ours, so without a build
 # type they would be built unoptimized -- which Google Benchmark reports as
@@ -54,45 +63,58 @@ FetchContent_Declare(highway
   GIT_SHALLOW TRUE
 )
 
-FetchContent_Declare(googletest
-  GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG v1.18.0
-  GIT_SHALLOW TRUE
-)
+if(XLEARN_BUILD_TESTS)
+  FetchContent_Declare(googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG v1.18.0
+    GIT_SHALLOW TRUE
+  )
 
-set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(benchmark
-  GIT_REPOSITORY https://github.com/google/benchmark.git
-  GIT_TAG v1.9.5
-  GIT_SHALLOW TRUE
-)
+  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+  set(BENCHMARK_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(benchmark
+    GIT_REPOSITORY https://github.com/google/benchmark.git
+    GIT_TAG v1.9.5
+    GIT_SHALLOW TRUE
+  )
 
-FetchContent_MakeAvailable(highway googletest benchmark)
-# xlearn_api_shared links it into a shared library.
+  FetchContent_MakeAvailable(highway googletest benchmark)
+  enable_testing()
+else()
+  FetchContent_MakeAvailable(highway)
+endif()
+
+# The extension module links it into a shared library.
 set_property(TARGET hwy PROPERTY POSITION_INDEPENDENT_CODE ON)
-
-enable_testing()
 
 #-------------------------------------------------------------------------------
 # Take almost all warnings;
 # Do not generate debug symbols;
 # Optimization level 3;
 # Optimization on architecture
+#
+# -march=native bakes in whatever the building machine supports, so a wheel
+# built with it crashes anywhere older. Distributable builds turn it off.
 #-------------------------------------------------------------------------------
 if(NOT WIN32)
 add_definitions("-Wall -Wno-sign-compare -O3
--march=native -Wno-strict-aliasing -Wno-comment")
+-Wno-strict-aliasing -Wno-comment")
+if(XLEARN_NATIVE_ARCH)
+add_definitions("-march=native")
+endif()
 else(WIN32)
 add_definitions("/WX- /MT")
 endif()
 
 #-------------------------------------------------------------------------------
-# Declare where our project will be installed.
+# Declare where our project will be installed. A wheel build gets its prefix
+# from the build backend instead.
 #-------------------------------------------------------------------------------
+if(NOT XLEARN_BUILD_PYTHON)
 set(CMAKE_INSTALL_PREFIX "xLearn")
+endif()
 
 #-------------------------------------------------------------------------------
 # For Mac OSX
@@ -115,6 +137,9 @@ include_directories(
 # the cases within a binary have to keep running in sequence.
 #-------------------------------------------------------------------------------
 function(xlearn_add_test name)
+  if(NOT XLEARN_BUILD_TESTS)
+    return()
+  endif()
   add_executable(${name} ${name}.cc)
   target_link_libraries(${name} GTest::gtest_main ${ARGN})
   add_test(NAME ${name}
@@ -123,6 +148,9 @@ function(xlearn_add_test name)
 endfunction()
 
 function(xlearn_add_benchmark name)
+  if(NOT XLEARN_BUILD_TESTS)
+    return()
+  endif()
   add_executable(${name} ${name}.cc)
   target_link_libraries(${name} benchmark::benchmark ${ARGN})
   set_target_properties(${name} PROPERTIES
@@ -136,7 +164,6 @@ link_directories(
   "${PROJECT_BINARY_DIR}/src/score"
   "${PROJECT_BINARY_DIR}/src/loss"
   "${PROJECT_BINARY_DIR}/src/solver"
-  "${PROJECT_BINARY_DIR}/src/c_api"
 )
 
 #-------------------------------------------------------------------------------
@@ -151,6 +178,7 @@ add_subdirectory(src/score)
 add_subdirectory(src/loss)
 add_subdirectory(src/solver)
 add_subdirectory(src/distributed)
-add_subdirectory(src/c_api)
-add_subdirectory(python-package)
+if(XLEARN_BUILD_PYTHON)
+add_subdirectory(src/python)
+endif()
 #add_subdirectory(R-package)

@@ -7,7 +7,5 @@ make
 
 # install python package
 
-cd python-package
-if command -v python2; then
-    sudo python2 setup.py install
-fi
+cd ..
+sudo python3 -m pip install .
