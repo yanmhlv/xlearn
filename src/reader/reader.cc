@@ -170,17 +170,19 @@ bool InmemReader::hash_binary(const std::string& filename) {
 #else
   FILE* file = OpenFileOrDie(bin_file.c_str(), "rb");
 #endif
-  // Check the first hash value
+  // The magic and version come first, and a cache written by a build with a
+  // different row layout fails on them. Without that check the two hashes
+  // below would still match -- they are hashes of the text file, which has
+  // not changed -- and the body would be read back as this layout's rows.
+  // A rejected cache is simply regenerated from the text.
   uint64 hash_1 = 0;
-  ReadDataFromDisk(file, (char*)&hash_1, sizeof(hash_1));
-  if (hash_1 != HashFile(filename, true)) {
+  uint64 hash_2 = 0;
+  if (!DMatrix::ReadHeader(file, &hash_1, &hash_2)) {
     Close(file);
     return false;
   }
-  // Check the second hash value
-  uint64 hash_2 = 0;
-  ReadDataFromDisk(file, (char*)&hash_2, sizeof(hash_2));
-  if (hash_2 != HashFile(filename, false)) {
+  if (hash_1 != HashFile(filename, true) ||
+      hash_2 != HashFile(filename, false)) {
     Close(file);
     return false;
   }
@@ -193,14 +195,9 @@ void InmemReader::init_from_binary() {
   // Init data_buf_                               
   data_buf_.Deserialize(filename_);
   has_label_ = data_buf_.has_label;
-  // Init data_samples_
   num_samples_ = data_buf_.row_length;
-  data_samples_.ReAlloc(num_samples_);
   // for shuffle
-  order_.resize(num_samples_);
-  for (int i = 0; i < order_.size(); ++i) {
-    order_[i] = i;
-  }
+  data_buf_.GatherRows(&rows_);
 }
 
 // Pre-load all the data to memory buffer from txt file.
@@ -234,14 +231,9 @@ void InmemReader::init_from_txt() {
   data_buf_.SetHash(HashFile(filename_, true),
                     HashFile(filename_, false));
   data_buf_.has_label = has_label_;
-  // Init data_samples_ 
   num_samples_ = data_buf_.row_length;
-  data_samples_.ReAlloc(num_samples_, has_label_);
   // for shuffle
-  order_.resize(num_samples_);
-  for (int i = 0; i < order_.size(); ++i) {
-    order_[i] = i;
-  }
+  data_buf_.GatherRows(&rows_);
   // Deserialize in-memory buffer to disk file.
   if (bin_out_) {
     std::string bin_file = filename_ + ".bin";
@@ -251,27 +243,21 @@ void InmemReader::init_from_txt() {
 }
 
 // Sample data from memory buffer.
+//
+// The whole buffer is the sample. Nothing is copied out of it any more, so
+// there is no second matrix to cut it into -- the shuffle lives in Rows(),
+// which the Loss walks the rows through.
 index_t InmemReader::Samples(DMatrix* &matrix) {
-  for (int i = 0; i < num_samples_; ++i) {
-    if (pos_ >= data_buf_.row_length) {
-      // End of the data buffer
-      if (i == 0) {
-        if (shuffle_) {
-          ShuffleOrder(order_, this->seed_+1);
-        }
-        matrix = nullptr;
-        return 0;
-      }
-      break;
+  if (pos_ >= data_buf_.row_length) {
+    if (shuffle_) {
+      ShuffleOrder(rows_, this->rng_);
     }
-    // Copy data between different DMatrix.
-    data_samples_.row[i] = data_buf_.row[order_[pos_]];
-    data_samples_.Y[i] = data_buf_.Y[order_[pos_]];
-    data_samples_.norm[i] = data_buf_.norm[order_[pos_]];
-    pos_++;
+    matrix = nullptr;
+    return 0;
   }
-  matrix = &data_samples_;
-  return num_samples_;
+  pos_ = data_buf_.row_length;
+  matrix = &data_buf_;
+  return data_buf_.row_length;
 }
 
 // Return to the beginning of the data buffer.
@@ -339,36 +325,22 @@ void FromDMReader::Initialize(xLearn::DMatrix* &dmatrix) {
   this->data_ptr_ = dmatrix;
   has_label_ = this->data_ptr_->has_label;
   num_samples_ = this->data_ptr_->row_length;
-  data_samples_.ReAlloc(num_samples_, has_label_);
   // for shuffle
-  order_.resize(num_samples_);
-  for (int i = 0; i < order_.size(); ++i) {
-    order_[i] = i;
-  }
+  this->data_ptr_->GatherRows(&rows_);
 }
 
 // Sample data from memory buffer.
 index_t FromDMReader::Samples(DMatrix* &matrix) {
-  for (int i = 0; i < num_samples_; ++i) {
-    if (pos_ >= this->data_ptr_->row_length) {
-      // End of the data buffer
-      if (i == 0) {
-        if (shuffle_) {
-          ShuffleOrder(order_, this->seed_+1);
-        }
-        matrix = nullptr;
-        return 0;
-      }
-      break;
+  if (pos_ >= this->data_ptr_->row_length) {
+    if (shuffle_) {
+      ShuffleOrder(rows_, this->rng_);
     }
-    // Copy data between different DMatrix.
-    data_samples_.row[i] = this->data_ptr_->row[order_[pos_]];
-    data_samples_.Y[i] = this->data_ptr_->Y[order_[pos_]];
-    data_samples_.norm[i] = this->data_ptr_->norm[order_[pos_]];
-    pos_++;
+    matrix = nullptr;
+    return 0;
   }
-  matrix = &data_samples_;
-  return num_samples_;
+  pos_ = this->data_ptr_->row_length;
+  matrix = this->data_ptr_;
+  return this->data_ptr_->row_length;
 }
 
 }  // namespace xLearn

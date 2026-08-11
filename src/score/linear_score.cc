@@ -26,20 +26,21 @@ This file is the implementation of LinearScore class.
 namespace xLearn {
 
 // y = wTx (incluing bias term)
-real_t LinearScore::CalcScore(const SparseRow* row,
+real_t LinearScore::CalcScore(RowRef row,
                               Model& model,
                               real_t norm) {
+  real_t sqrt_norm = std::sqrt(norm);
   real_t* w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
   real_t score = 0.0;
   index_t auxiliary_size = model.GetAuxiliarySize();
   // linear term
-  for (const Node& entry : *row) {
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature in Prediction
     if (feat_id >= num_feat) continue;
     index_t idx = feat_id * auxiliary_size;
-    score += w[idx] * entry.feat_val;
+    score += w[idx] * row.val(n) * sqrt_norm;
   }
   // bias
   score += model.GetParameter_b()[0];
@@ -47,7 +48,7 @@ real_t LinearScore::CalcScore(const SparseRow* row,
 }
 
 // Calculate gradient and update current model
-void LinearScore::CalcGrad(const SparseRow* row,
+void LinearScore::CalcGrad(RowRef row,
                            Model& model,
                            real_t pg,
                            real_t norm) {
@@ -65,20 +66,21 @@ void LinearScore::CalcGrad(const SparseRow* row,
 }
 
 // Calculate gradient and update current model using sgd
-void LinearScore::calc_grad_sgd(const SparseRow* row,
+void LinearScore::calc_grad_sgd(RowRef row,
                                 Model& model,
                                 real_t pg,
                                 real_t norm) {
   // linear term
+  real_t sqrt_norm = std::sqrt(norm);
   real_t* w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (const Node& entry : *row) {
-    real_t gradient = pg * entry.feat_val;
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
-    gradient += regu_lambda_ * w[feat_id];
-    w[feat_id] -= (learning_rate_ * gradient);
+    real_t &wl = w[feat_id];
+    real_t gradient = regu_lambda_ * wl + pg * row.val(n) * sqrt_norm;
+    wl -= (learning_rate_ * gradient);
   }
   // bias
   w = model.GetParameter_b();
@@ -88,21 +90,22 @@ void LinearScore::calc_grad_sgd(const SparseRow* row,
 }
 
 // Calculate gradient and update current model using adagrad
-void LinearScore::calc_grad_adagrad(const SparseRow* row,
+void LinearScore::calc_grad_adagrad(RowRef row,
                                     Model& model,
                                     real_t pg,
                                     real_t norm) {
   // linear term
+  real_t sqrt_norm = std::sqrt(norm);
   real_t* w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (const Node& entry : *row) {
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
-    real_t gradient = pg * entry.feat_val;
     index_t idx_g = feat_id * 2;
     index_t idx_c = idx_g + 1;
-    gradient += regu_lambda_ * w[idx_g];
+    real_t gradient = regu_lambda_ * w[idx_g] +
+                      pg * row.val(n) * sqrt_norm;
     // Hold the updated cache in a register: writing it to w[] and reading it
     // straight back puts a store-to-load round trip on the critical path,
     // ahead of a square root that is already the longest link in it.
@@ -120,7 +123,7 @@ void LinearScore::calc_grad_adagrad(const SparseRow* row,
 }
 
 // Calculate gradient and update current model using ftrl
-void LinearScore::calc_grad_ftrl(const SparseRow* row,
+void LinearScore::calc_grad_ftrl(RowRef row,
                                  Model& model,
                                  real_t pg,
                                  real_t norm) {
@@ -128,14 +131,14 @@ void LinearScore::calc_grad_ftrl(const SparseRow* row,
   real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (const Node& entry : *row) {
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id*3];
     real_t &wlg = w[feat_id*3+1];
     real_t &wlz = w[feat_id*3+2];
-    real_t g = lambda_2_*wl+pg*entry.feat_val*sqrt_norm; 
+    real_t g = lambda_2_*wl+pg*row.val(n)*sqrt_norm; 
     real_t old_wlg = wlg;
     wlg += g*g;
     real_t sigma = (std::sqrt(wlg)-std::sqrt(old_wlg)) * inv_alpha_;

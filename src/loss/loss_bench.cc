@@ -86,7 +86,7 @@ void RunCalcGrad(benchmark::State& state) {
   // Untimed: keeps the parameters from drifting away over many passes.
   workload.model.Reset();
   for (auto _ : state) {
-    loss.CalcGrad(&workload.matrix, workload.model);
+    loss.CalcGrad(&workload.matrix, workload.model, nullptr);
   }
   state.SetItemsProcessed(state.iterations() * kNumRows);
 }

@@ -81,6 +81,7 @@ namespace xLearn {
 // a record for the best model parameter by using SetBestModel() and
 // we can shrink back to find the best model by using Shrink() method.
 //------------------------------------------------------------------------------
+
 class Model {
  public:
   // Default Constructor and Destructor
@@ -98,7 +99,8 @@ class Model {
               index_t num_field,
               index_t num_K,
               index_t aux_size,
-              real_t scale = 1.0);
+              real_t scale = 1.0,
+              int seed = 1);
 
   // Serialize model to a checkpoint file.
   void Serialize(const std::string& filename);
@@ -115,8 +117,10 @@ class Model {
   // Shrink back for getting the best model.
   void Shrink();
 
-  // Get the size of auxiliary cache size.
-  inline real_t GetAuxiliarySize() { return aux_size_; }
+  // Get the size of auxiliary cache size. An index, not a real: every
+  // caller multiplies it into an offset, and returning a float made each
+  // of those a float multiply narrowed back to an integer.
+  inline index_t GetAuxiliarySize() { return aux_size_; }
 
   // Get the pointer of linear term.
   inline real_t* GetParameter_w() { return param_w_; }
@@ -207,6 +211,10 @@ class Model {
   real_t* param_best_b_ = nullptr;
   /* Used to init model parameters */
   real_t scale_;
+  /* Seeds the latent factor draw, so that a run can be repeated exactly and
+  a family of runs can differ. Reset() re-draws from it, which is what keeps
+  every cross-validation fold starting from the same initial model. */
+  int seed_ = 1;
 
   // Initialize the value of model parameters and gradient cache.
   void initial(bool set_value = false);

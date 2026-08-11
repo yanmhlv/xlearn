@@ -40,39 +40,57 @@ class FMScore : public Score {
 
   // Given one example and current model, this method
   // returns the fm score.
-  real_t CalcScore(const SparseRow* row,
+  real_t CalcScore(RowRef row,
                    Model& model,
                    real_t norm = 1.0);
 
   // Calculate gradient and update current
   // model parameters.
-  void CalcGrad(const SparseRow* row,
+  void CalcGrad(RowRef row,
                 Model& model,
                 real_t pg,
                 real_t norm = 1.0);
 
+  // The latent sum scoring builds is exactly what the gradient needs.
+  bool PrefersFusedStep() const { return true; }
+
+  // Score and update in one pass, reusing the latent sum between them.
+  real_t Step(RowRef row,
+              Model& model,
+              real_t norm,
+              PartialGrad partial_grad,
+              void* context);
+
  protected:
+  // The three below update the latent factors from a sum that is already
+  // built, because both callers have one: CalcGrad() accumulates it, and
+  // Step() has it left over from scoring.
+  void latent_grad(RowRef row,
+                   Model& model,
+                   real_t pg,
+                   real_t norm,
+                   const real_t* s);
+
   // Calculate gradient and update model using sgd
-  void calc_grad_sgd(const SparseRow* row,
+  void calc_grad_sgd(RowRef row,
                      Model& model,
                      real_t pg,
-                     real_t norm = 1.0);
+                     real_t norm,
+                     const real_t* s);
 
   // Calculate gradient and update model using adagrad
-  void calc_grad_adagrad(const SparseRow* row,
+  void calc_grad_adagrad(RowRef row,
                          Model& model,
                          real_t pg,
-                         real_t norm = 1.0);
+                         real_t norm,
+                         const real_t* s);
 
   // Calculate gradient and update model using ftrl
-  void calc_grad_ftrl(const SparseRow* row,
+  void calc_grad_ftrl(RowRef row,
                       Model& model,
                       real_t pg,
-                      real_t norm = 1.0);
- private:
-  real_t* comp_res = nullptr;
-  real_t* comp_z_lt_zero = nullptr;
-  real_t* comp_z_gt_zero = nullptr;
+                      real_t norm,
+                      const real_t* s);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(FMScore);

@@ -45,7 +45,8 @@ class LinearScoreTest : public ::testing::Test {
 };
 
 TEST_F(LinearScoreTest, calc_score) {
-  SparseRow row(kLength);
+  RowBuffer buf;
+    const index_t kRowLen = kLength;
   Model model;
   model.Initialize(param.score_func,
                 param.loss_func,
@@ -57,18 +58,18 @@ TEST_F(LinearScoreTest, calc_score) {
     w[i] = 3.0;
   }
   model.GetParameter_b()[0] = 0.0;
-  // Init SparseRow
-  for (index_t i = 0; i < kLength; ++i) {
-    row[i].feat_id = i;
-    row[i].feat_val = 2.0;
+  // Init the row
+  for (index_t i = 0; i < kRowLen; ++i) {
+    buf.Add(i, 2.0);
   }
   LinearScore score;
-  real_t val = score.CalcScore(&row, model);
+  real_t val = score.CalcScore(buf, model);
   EXPECT_FLOAT_EQ(val, 600.0);
 }
 
 TEST_F(LinearScoreTest, calc_score_overflow) {
-  SparseRow row(2*kLength);
+  RowBuffer buf;
+    const index_t kRowLen = 2*kLength;
   Model model;
   model.Initialize(param.score_func,
                 param.loss_func,
@@ -80,13 +81,12 @@ TEST_F(LinearScoreTest, calc_score_overflow) {
     w[i] = 3.0;
   }
   model.GetParameter_b()[0] = 0.0;
-  // Init SparseRow
-  for (index_t i = 0; i < 2*kLength; ++i) {
-    row[i].feat_id = i;
-    row[i].feat_val = 2.0;
+  // Init the row
+  for (index_t i = 0; i < kRowLen; ++i) {
+    buf.Add(i, 2.0);
   }
   LinearScore score;
-  real_t val = score.CalcScore(&row, model);
+  real_t val = score.CalcScore(buf, model);
   EXPECT_FLOAT_EQ(val, 600.0);
 }
 

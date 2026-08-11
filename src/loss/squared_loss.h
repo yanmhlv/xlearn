@@ -44,7 +44,9 @@ class SquaredLoss : public Loss {
   // Given data sample and current model, calculate gradient
   // and update current model parameters.
   // This function will also accumulate the loss value.
-  void CalcGrad(const DMatrix* data_matrix, Model& model);
+  void CalcGrad(const DMatrix* data_matrix,
+                Model& model,
+                const std::vector<RowMeta>* rows);
 
   // Return current loss type
   std::string loss_type() { return "mse_loss"; }

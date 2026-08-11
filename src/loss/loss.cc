@@ -41,9 +41,8 @@ void pred_thread(const DMatrix* matrix,
                  size_t end_idx) {
   CHECK_GE(end_idx, start_idx);
   for (size_t i = start_idx; i < end_idx; ++i) {
-    SparseRow* row = matrix->row[i];
     real_t norm = is_norm ? matrix->norm[i] : 1.0;
-    (*pred)[i] = score_func_->CalcScore(row, *model, norm);
+    (*pred)[i] = score_func_->CalcScore(matrix->Row(i), *model, norm);
   }
 }
 

@@ -88,16 +88,46 @@ class Score {
 
   // Given one example and current model, this method
   // returns the score
-  virtual real_t CalcScore(const SparseRow* row,
+  virtual real_t CalcScore(RowRef row,
                            Model& model,
                            real_t norm = 1.0) = 0;
 
   // Calculate gradient and update current
   // model parameters
-  virtual void CalcGrad(const SparseRow* row,
+  virtual void CalcGrad(RowRef row,
                         Model& model,
                         real_t pg,
                         real_t norm = 1.0) = 0;
+
+  // Turns a prediction into the partial gradient to apply, and reports the
+  // loss it came from. A function pointer and a context rather than a
+  // std::function: this runs once per example and must not allocate.
+  typedef real_t (*PartialGrad)(real_t pred, void* context, real_t* loss);
+
+  // Whether Step() saves this score function real work.
+  //
+  // Asked once per batch, not once per row, because the answer decides which
+  // loop a Loss runs. FM says yes: its latent sum is the same in both halves,
+  // over parameters the linear update cannot have touched, so the split path
+  // builds it twice. Linear and FFM say no, and it is not a wash for them --
+  // routing a score function with nothing to share through Step() puts an
+  // indirect call it cannot inline around a body that does very little, which
+  // measured 17% on LR before this existed.
+  virtual bool PrefersFusedStep() const { return false; }
+
+  // Score one example and apply the resulting gradient, returning the loss.
+  // Only called when PrefersFusedStep() is true.
+  virtual real_t Step(RowRef row,
+                      Model& model,
+                      real_t norm,
+                      PartialGrad partial_grad,
+                      void* context) {
+    real_t loss = 0;
+    real_t pg = partial_grad(this->CalcScore(row, model, norm),
+                             context, &loss);
+    this->CalcGrad(row, model, pg, norm);
+    return loss;
+  }
 
  protected:
   real_t learning_rate_;

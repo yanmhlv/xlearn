@@ -75,26 +75,47 @@ void SquaredLoss::Evaluate(const std::vector<real_t>& pred,
   }
 }
 
+// Score::Step() hands the prediction back here to be turned into the gradient
+// it should apply. The context is the label, which is all this needs. The
+// reported loss is the squared error; the caller halves the total once.
+static real_t sq_partial_grad(real_t pred, void* context, real_t* loss) {
+  real_t error = pred - *static_cast<const real_t*>(context);
+  *loss = error * error;
+  return error;
+}
+
 // Calculate gradient in one thread
 void sq_gradient_thread(const DMatrix* matrix,
                         Model* model,
                         Score* score_func,
                         bool is_norm,
+                        const std::vector<RowMeta>* rows,
                         real_t* sum,
                         index_t start,
                         index_t end) {
   CHECK_GE(end, start);
   *sum = 0;
+  // Which loop, decided once for the whole batch -- see ce_gradient_thread().
+  if (score_func->PrefersFusedStep()) {
+    for (size_t i = start; i < end; ++i) {
+      RowMeta m = rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+      real_t norm = is_norm ? m.norm : 1.0;
+      *sum += score_func->Step(matrix->Row(m), *model, norm,
+                               sq_partial_grad, &m.y);
+    }
+    *sum *= 0.5;
+    return;
+  }
   for (size_t i = start; i < end; ++i) {
-    SparseRow* row = matrix->row[i];
-    real_t norm = is_norm ? matrix->norm[i] : 1.0;
+    RowMeta m = rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+    RowRef row = matrix->Row(m);
+    real_t norm = is_norm ? m.norm : 1.0;
     real_t pred = score_func->CalcScore(row, *model, norm);
     // loss
-    real_t error = matrix->Y[i] - pred;
+    real_t error = m.y - pred;
     *sum += (error*error);
     // partial gradient: -error
-    real_t pg = pred - matrix->Y[i];
-    // real gradient and update
+    real_t pg = pred - m.y;
     score_func->CalcGrad(row, *model, pg, norm);
   }
   *sum *= 0.5;
@@ -114,7 +135,8 @@ void sq_gradient_thread(const DMatrix* matrix,
 //                         master_thread
 //------------------------------------------------------------------------------
 void SquaredLoss::CalcGrad(const DMatrix* matrix,
-                           Model& model) {
+                           Model& model,
+                           const std::vector<RowMeta>* rows) {
   CHECK_NOTNULL(matrix);
   CHECK_GT(matrix->row_length, 0);
   size_t row_len = matrix->row_length;
@@ -129,6 +151,7 @@ void SquaredLoss::CalcGrad(const DMatrix* matrix,
                              &model,
                              score_func_,
                              norm_,
+                             rows,
                              &(sum[i]),
                              start,
                              end));

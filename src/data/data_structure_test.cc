@@ -26,17 +26,18 @@ namespace xLearn {
 
 const size_t kLength = 10;
 
-TEST(DMATRIX_TEST, ReAlloc) {
+TEST(DMATRIX_TEST, Reserve) {
   DMatrix matrix;
-  matrix.ReAlloc(kLength, false);
-  EXPECT_EQ(matrix.hash_value_1, 0);
-  EXPECT_EQ(matrix.hash_value_2, 0);
+  matrix.Reserve(kLength, kLength * 4);
+  // Reserving buys capacity, not rows.
+  EXPECT_EQ(matrix.row_length, 0);
+  EXPECT_EQ(matrix.Y.empty(), true);
+  for (size_t i = 0; i < kLength; ++i) {
+    matrix.AddRow();
+    matrix.AddNode(i, i, 1.0, 0);
+  }
   EXPECT_EQ(matrix.row_length, kLength);
-  EXPECT_EQ(matrix.row.size(), kLength);
-  EXPECT_EQ(matrix.Y.size(), kLength);
-  EXPECT_EQ(matrix.norm.size(), kLength);
-  EXPECT_EQ(matrix.has_label, false);
-  EXPECT_EQ(matrix.pos, 0);
+  EXPECT_EQ(matrix.offset.size(), kLength + 1);
 }
 
 TEST(DMATRIX_TEST, Reset) {
@@ -46,10 +47,9 @@ TEST(DMATRIX_TEST, Reset) {
   EXPECT_EQ(matrix.hash_value_1, 0);
   EXPECT_EQ(matrix.hash_value_2, 0);
   EXPECT_EQ(matrix.row_length, 0);
-  EXPECT_EQ(matrix.pos, 0);
   EXPECT_EQ(matrix.Y.empty(), true);
   EXPECT_EQ(matrix.norm.empty(), true);
-  EXPECT_EQ(matrix.row.empty(),true);
+  EXPECT_EQ(matrix.keys.empty(), true);
 }
 
 TEST(DMATRIX_TEST, AddData) {
@@ -66,12 +66,11 @@ TEST(DMATRIX_TEST, AddData) {
     EXPECT_EQ(matrix.row_length, kLength);
     EXPECT_FLOAT_EQ(matrix.Y[i], 1.0);
     EXPECT_FLOAT_EQ(matrix.norm[i], 1.0);
-    SparseRow* row = matrix.row[i];
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
-      EXPECT_EQ(iter->feat_id, i);
-      EXPECT_EQ(iter->field_id, i);
-      EXPECT_FLOAT_EQ(iter->feat_val, 66.66);
+    RowRef row = matrix.Row(i);
+    for (index_t j = 0; j < row.len; ++j) {
+      EXPECT_EQ(row.feat(j), i);
+      EXPECT_EQ(row.field(j), i);
+      EXPECT_FLOAT_EQ(row.val(j), 66.66);
     }
   }
   EXPECT_EQ(matrix.hash_value_1, 1234);
@@ -99,10 +98,9 @@ TEST(DMATRIX_TEST, Serialize_and_Deserialize) {
   EXPECT_EQ(matrix.hash_value_1, 0);
   EXPECT_EQ(matrix.hash_value_2, 0);
   EXPECT_EQ(matrix.row_length, 0);
-  EXPECT_EQ(matrix.pos, 0);
   EXPECT_EQ(matrix.Y.empty(), true);
   EXPECT_EQ(matrix.norm.empty(), true);
-  EXPECT_EQ(matrix.row.empty(),true);
+  EXPECT_EQ(matrix.keys.empty(), true);
   // Deserialize
 #ifndef _MSC_VER
   matrix.Deserialize("/tmp/test.bin");
@@ -116,12 +114,11 @@ TEST(DMATRIX_TEST, Serialize_and_Deserialize) {
   for (size_t i = 0; i < kLength; ++i) {
     EXPECT_EQ(matrix.Y[i], i);
     EXPECT_EQ(matrix.norm[i], 0.25);
-    SparseRow *row = matrix.row[i];
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
-      EXPECT_EQ(iter->field_id, i);
-      EXPECT_EQ(iter->feat_id, i);
-      EXPECT_FLOAT_EQ(iter->feat_val, 2.5);
+    RowRef row = matrix.Row(i);
+    for (index_t j = 0; j < row.len; ++j) {
+      EXPECT_EQ(row.field(j), i);
+      EXPECT_EQ(row.feat(j), i);
+      EXPECT_FLOAT_EQ(row.val(j), 2.5);
     }
   }
 #ifndef _MSC_VER
@@ -167,12 +164,11 @@ TEST(DMATRIX_TEST, CopyFrom) {
   for (size_t i = 0; i < kLength; ++i) {
     EXPECT_EQ(new_matrix.Y[i], i);
     EXPECT_EQ(new_matrix.norm[i], 0.25);
-    SparseRow *row =new_matrix.row[i];
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
-      EXPECT_EQ(iter->field_id, i);
-      EXPECT_EQ(iter->feat_id, i);
-      EXPECT_FLOAT_EQ(iter->feat_val, 2.5);
+    RowRef row = new_matrix.Row(i);
+    for (index_t j = 0; j < row.len; ++j) {
+      EXPECT_EQ(row.field(j), i);
+      EXPECT_EQ(row.feat(j), i);
+      EXPECT_FLOAT_EQ(row.val(j), 2.5);
     }
   }
 }

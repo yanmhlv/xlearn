@@ -33,70 +33,227 @@ namespace {
 // Scratch space for the per-row latent sums. The solver shares one Score
 // across the whole thread pool, so this has to be per thread; outliving the
 // call is what saves an allocation on every single row.
+// std::vector guarantees only 16 bytes, so the run is over-allocated by one
+// cache line and handed out from the first line boundary inside it -- the
+// wide path loads 32 bytes at a time, and at 16-byte alignment every other
+// one would straddle a line.
+thread_local std::vector<real_t> scratch;
+thread_local real_t* scratch_begin = nullptr;
+
 real_t* ZeroedScratch(index_t size) {
-  static thread_local std::vector<real_t> buffer;
-  if (buffer.size() < size) {
-    buffer.resize(size);
+  const index_t kPad = kCacheLineByte / sizeof(real_t);
+  if (scratch.size() < size + kPad) {
+    scratch.resize(size + kPad);
+    scratch_begin = nullptr;
   }
-  std::fill_n(buffer.begin(), size, 0.0f);
-  return buffer.data();
+  if (scratch_begin == nullptr) {
+    uintptr_t addr = reinterpret_cast<uintptr_t>(scratch.data());
+    uintptr_t pad = (kCacheLineByte - addr % kCacheLineByte) % kCacheLineByte;
+    scratch_begin = scratch.data() + pad / sizeof(real_t);
+  }
+  std::fill_n(scratch_begin, size, 0.0f);
+  return scratch_begin;
 }
 
-// Sum of weighted * (s - weighted) over the row's latent factors.
+// The scratch as the last ZeroedScratch() caller on this thread left it.
+// Step() reaches the latent sum CalcScore() just filled in rather than
+// accumulating it a second time.
+real_t* FilledScratch() { return scratch_begin; }
+
+// Where a feature's latent block lives, resolved once per row rather than per
+// coordinate.
+struct LatentLayout {
+  index_t num_feat;
+  index_t aligned_k;
+  index_t align0;
+};
+
+LatentLayout LayoutOf(Model& model) {
+  index_t aligned_k = model.get_aligned_k();
+  return LatentLayout{model.GetNumFeature(), aligned_k,
+                      aligned_k * model.GetAuxiliarySize()};
+}
+
+// Whether the latent planes can be walked eight lanes at a time. kAlign pads K
+// to a multiple of four, so four always divides aligned_k and eight does from
+// k = 8 up. Highway caps the request to what the target has, and the loops
+// step by the capped Lanes(), which divides the request either way -- so a
+// four-lane machine running the wide path stays correct.
+inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
+
+// Accumulates s = sum_j (v_j * x_j) and pair = sum_{i<j} (v_i x_i)(v_j x_j)
+// over the row's latent blocks, in one walk.
 //
-// A single accumulator would serialise the whole reduction on the latency of
-// one add, so a wide K spreads it over kChains independent ones. That setup
-// does not pay for itself on a narrow K, where one chain leaves this as the
-// plain loop it started as.
-template <int kChains>
-real_t LatentSum(const SparseRow* row,
-                 Model& model,
-                 real_t norm,
-                 const real_t* s,
-                 index_t num_feat,
-                 index_t aligned_k,
-                 index_t align0) {
-  Float4 total[kChains];
-  for (int c = 0; c < kChains; ++c) {
-    total[c] = Float4::Zero();
-  }
-  const index_t step = kChains * kAlign;
-  const index_t unrolled_end = aligned_k - aligned_k % step;
-  for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
+// Each block folds into pair against the s built from the blocks before it, so
+// the pairwise sum is formed a pair at a time rather than as the textbook
+// half of (s^2 - sum of squares). That identity costs the same three vector
+// ops but needs both terms to exist as floats and then cancels them against
+// each other: at large latent magnitudes it loses every significant digit,
+// and past sqrt(FLT_MAX) it overflows to inf - inf. This form has no such
+// range, and it leaves s in the caller's buffer, which is exactly what the
+// gradient needs next.
+//
+// The gradient wants s and not the pairwise sum, so it instantiates this with
+// kWantPair false and the pair half compiles away; pair may be null there.
+template <bool kWantPair, int N>
+void Accumulate(RowRef row,
+                Model& model,
+                real_t norm,
+                const LatentLayout& lay,
+                real_t* s,
+                real_t* pair) {
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t j1 = row.feat(n);
     // To avoid unseen feature in Prediction
-    if (j1 >= num_feat) continue;
-    real_t* w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(entry.feat_val * norm);
-    index_t d = 0;
-    for (; d < unrolled_end; d += step) {
-      for (int c = 0; c < kChains; ++c) {
-        index_t at = d + c*kAlign;
-        Float4 weighted = Float4::Load(w+at) * val;
-        Float4 partial = Float4::Load(s+at) - weighted;
-        // Several chains in flight hide the longer latency of the fused
-        // multiply-add; a single one would only be lengthened by it.
-        total[c] = kChains == 1 ? total[c] + weighted * partial
-                                : MulAdd(weighted, partial, total[c]);
+    if (j1 >= lay.num_feat) continue;
+    real_t* w = model.GetParameter_v() + j1 * lay.align0;
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+      Vec<N> x = Vec<N>::Load(w+d) * val;
+      Vec<N> old_s = Vec<N>::Load(s+d);
+      if (kWantPair) {
+        MulAdd(x, old_s, Vec<N>::Load(pair+d)).Store(pair+d);
       }
-    }
-    for (; d < aligned_k; d += kAlign) {
-      Float4 weighted = Float4::Load(w+d) * val;
-      total[0] = total[0] + weighted * (Float4::Load(s+d) - weighted);
+      (old_s + x).Store(s+d);
     }
   }
-  Float4 sum = total[0];
-  for (int c = 1; c < kChains; ++c) {
-    sum = sum + total[c];
+}
+
+// Sum of a run of aligned_k reals. One pass over the scratch, not over the
+// row, so this is O(k) and the chained accumulators the row walk needs would
+// buy nothing here.
+template <int N>
+real_t HorizontalSum(const real_t* v, index_t aligned_k) {
+  Vec<N> total = Vec<N>::Zero();
+  for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
+    total = total + Vec<N>::Load(v+d);
   }
-  return sum.Sum();
+  return total.Sum();
+}
+
+//------------------------------------------------------------------------------
+// The latent update, one per optimizer.
+//
+// Free functions templated on the vector width rather than members, because
+// the width is picked per call from aligned_k and a member cannot be
+// specialized on it without moving the bodies into the header. The linear and
+// bias terms stay with their callers: they are scalar, so the width does not
+// reach them.
+//------------------------------------------------------------------------------
+
+template <int N>
+void LatentSgd(RowRef row,
+               Model& model,
+               real_t pg,
+               real_t norm,
+               const LatentLayout& lay,
+               const real_t* s,
+               real_t learning_rate,
+               real_t regu_lambda) {
+  Vec<N> pg_all = Vec<N>::Broadcast(pg);
+  Vec<N> lr = Vec<N>::Broadcast(learning_rate);
+  Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t j1 = row.feat(n);
+    // To avoid unseen feature
+    if (j1 >= lay.num_feat) continue;
+    real_t* w = model.GetParameter_v() + j1 * lay.align0;
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    Vec<N> pgv = pg_all * val;
+    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+      Vec<N> sum = Vec<N>::Load(s+d);
+      Vec<N> weight = Vec<N>::Load(w+d);
+      Vec<N> grad = MulAdd(lamb, weight, pgv * NegMulAdd(weight, val, sum));
+      NegMulAdd(lr, grad, weight).Store(w+d);
+    }
+  }
+}
+
+template <int N>
+void LatentAdagrad(RowRef row,
+                   Model& model,
+                   real_t pg,
+                   real_t norm,
+                   const LatentLayout& lay,
+                   const real_t* s,
+                   real_t learning_rate,
+                   real_t regu_lambda) {
+  Vec<N> pg_all = Vec<N>::Broadcast(pg);
+  Vec<N> lr = Vec<N>::Broadcast(learning_rate);
+  Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t j1 = row.feat(n);
+    // To avoid unseen feature
+    if (j1 >= lay.num_feat) continue;
+    real_t* w = model.GetParameter_v() + j1 * lay.align0;
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    Vec<N> pgv = pg_all * val;
+    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+      Vec<N> sum = Vec<N>::Load(s+d);
+      Vec<N> weight = Vec<N>::Load(w+d);
+      Vec<N> weight_grad = Vec<N>::Load(w+lay.aligned_k+d);
+      Vec<N> grad = MulAdd(lamb, weight, pgv * NegMulAdd(weight, val, sum));
+      weight_grad = MulAdd(grad, grad, weight_grad);
+      NegMulAdd(lr, RSqrt(weight_grad) * grad, weight).Store(w+d);
+      weight_grad.Store(w+lay.aligned_k+d);
+    }
+  }
+}
+
+template <int N>
+void LatentFtrl(RowRef row,
+                Model& model,
+                real_t pg,
+                real_t norm,
+                const LatentLayout& lay,
+                const real_t* s,
+                real_t inv_alpha_val,
+                real_t beta_val,
+                real_t lambda_1_val,
+                real_t lambda_2_val) {
+  Vec<N> pg_all = Vec<N>::Broadcast(pg);
+  Vec<N> inv_alpha = Vec<N>::Broadcast(inv_alpha_val);
+  Vec<N> beta = Vec<N>::Broadcast(beta_val);
+  Vec<N> l1 = Vec<N>::Broadcast(lambda_1_val);
+  Vec<N> l2 = Vec<N>::Broadcast(lambda_2_val);
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t j1 = row.feat(n);
+    // To avoid unseen feature
+    if (j1 >= lay.num_feat) continue;
+    real_t* w_base = model.GetParameter_v() + j1 * lay.align0;
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    Vec<N> pgv = pg_all * val;
+    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+      real_t* w = w_base + d;
+      real_t* wg = w_base + lay.aligned_k + d;
+      real_t* z = w_base + lay.aligned_k*2 + d;
+      Vec<N> sum = Vec<N>::Load(s+d);
+      Vec<N> weight = Vec<N>::Load(w);
+      Vec<N> weight_grad = Vec<N>::Load(wg);
+      Vec<N> z_val = Vec<N>::Load(z);
+      Vec<N> grad = MulAdd(l2, weight, pgv * NegMulAdd(weight, val, sum));
+      Vec<N> grad_sq = grad * grad;
+      Vec<N> sigma = (Sqrt(weight_grad + grad_sq)
+                      - Sqrt(weight_grad)) * inv_alpha;
+      z_val = NegMulAdd(sigma, weight, z_val + grad);
+      z_val.Store(z);
+      weight_grad = weight_grad + grad_sq;
+      weight_grad.Store(wg);
+      // Update w. Where |z| is inside the l1 band the weight is driven to
+      // zero, so the branch becomes a select over the whole vector.
+      Vec<N> numerator = CopySign(l1, z_val) - z_val;
+      Vec<N> denominator = MulAdd(beta + Sqrt(weight_grad), inv_alpha, l2);
+      IfThenZeroElse(Abs(z_val) <= l1,
+                     numerator / denominator).Store(w);
+    }
+  }
 }
 
 } // namespace
 
 // y = sum( (V_i*V_j)(x_i * x_j) )
 // Using SIMD to accelerate vector operation.
-real_t FMScore::CalcScore(const SparseRow* row,
+real_t FMScore::CalcScore(RowRef row,
                           Model& model,
                           real_t norm) {
   /*********************************************************
@@ -107,11 +264,11 @@ real_t FMScore::CalcScore(const SparseRow* row,
   index_t num_feat = model.GetNumFeature();
   real_t t = 0;
   index_t aux_size = model.GetAuxiliarySize();
-  for (const Node& entry : *row) {
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature in Prediction
     if (feat_id >= num_feat) continue;
-    t += (entry.feat_val * w[feat_id*aux_size] * sqrt_norm);
+    t += (row.val(n) * w[feat_id*aux_size] * sqrt_norm);
   }
   // bias
   w = model.GetParameter_b();
@@ -119,66 +276,88 @@ real_t FMScore::CalcScore(const SparseRow* row,
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
-  index_t aligned_k = model.get_aligned_k();
-  index_t align0 = model.get_aligned_k() * aux_size;
-  real_t* s = ZeroedScratch(aligned_k);
-  for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
-    // To avoid unseen feature in Prediction
-    if (j1 >= num_feat) continue;
-    real_t v1 = entry.feat_val;
-    real_t *w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(v1*norm);
-    for (index_t d = 0; d < aligned_k; d += kAlign) {
-      Float4 sum = Float4::Load(s+d);
-      Float4 const weight = Float4::Load(w+d);
-      MulAdd(weight, val, sum).Store(s+d);
-    }
+  LatentLayout lay = LayoutOf(model);
+  real_t* s = ZeroedScratch(2 * lay.aligned_k);
+  real_t* pair = s + lay.aligned_k;
+  if (WideLanes(lay.aligned_k)) {
+    Accumulate<true, 8>(row, model, norm, lay, s, pair);
+    return t + HorizontalSum<8>(pair, lay.aligned_k);
   }
-  real_t t_all = aligned_k >= 4*kAlign
-      ? LatentSum<4>(row, model, norm, s, num_feat, aligned_k, align0)
-      : LatentSum<1>(row, model, norm, s, num_feat, aligned_k, align0);
-  t_all *= 0.5;
-  t_all += t;
-  return t_all;
+  Accumulate<true, 4>(row, model, norm, lay, s, pair);
+  return t + HorizontalSum<4>(pair, lay.aligned_k);
 }
 
 // Calculate gradient and update current model parameters.
 // Using SIMD to accelerate vector operation.
-void FMScore::CalcGrad(const SparseRow* row,
+void FMScore::CalcGrad(RowRef row,
                        Model& model,
                        real_t pg,
                        real_t norm) {
+  LatentLayout lay = LayoutOf(model);
+  real_t* s = ZeroedScratch(lay.aligned_k);
+  if (WideLanes(lay.aligned_k)) {
+    Accumulate<false, 8>(row, model, norm, lay, s, nullptr);
+  } else {
+    Accumulate<false, 4>(row, model, norm, lay, s, nullptr);
+  }
+  this->latent_grad(row, model, pg, norm, s);
+}
+
+// Score and update in one pass.
+//
+// CalcScore() leaves the latent sum in the scratch buffer and the gradient
+// needs exactly it, over parameters the linear update below cannot have
+// touched -- so the accumulation the split path repeats is skipped here.
+real_t FMScore::Step(RowRef row,
+                     Model& model,
+                     real_t norm,
+                     PartialGrad partial_grad,
+                     void* context) {
+  real_t loss = 0;
+  real_t pred = this->CalcScore(row, model, norm);
+  real_t pg = partial_grad(pred, context, &loss);
+  this->latent_grad(row, model, pg, norm, FilledScratch());
+  return loss;
+}
+
+// Dispatch the latent update on the optimizer. The linear and bias terms are
+// updated inside each, because their update rule differs the same way.
+void FMScore::latent_grad(RowRef row,
+                          Model& model,
+                          real_t pg,
+                          real_t norm,
+                          const real_t* s) {
   switch (opt_) {
     case OptType::kSgd:
-      this->calc_grad_sgd(row, model, pg, norm);
+      this->calc_grad_sgd(row, model, pg, norm, s);
       break;
     case OptType::kAdaGrad:
-      this->calc_grad_adagrad(row, model, pg, norm);
+      this->calc_grad_adagrad(row, model, pg, norm, s);
       break;
     case OptType::kFtrl:
-      this->calc_grad_ftrl(row, model, pg, norm);
+      this->calc_grad_ftrl(row, model, pg, norm, s);
       break;
   }
 }
 
 // Calculate gradient and update current model using sgd
-void FMScore::calc_grad_sgd(const SparseRow* row,
+void FMScore::calc_grad_sgd(RowRef row,
                             Model& model,
                             real_t pg,
-                            real_t norm) {
+                            real_t norm,
+                            const real_t* s) {
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/  
   real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (const Node& entry : *row) {
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id];
-    real_t g = regu_lambda_*wl+pg*entry.feat_val*sqrt_norm;
+    real_t g = regu_lambda_*wl+pg*row.val(n)*sqrt_norm;
     wl -= learning_rate_ * g;
   }
   // bias
@@ -189,61 +368,35 @@ void FMScore::calc_grad_sgd(const SparseRow* row,
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
-  index_t aligned_k = model.get_aligned_k();
-  index_t align0 = model.get_aligned_k() * 
-                   model.GetAuxiliarySize();
-  Float4 pg_all = Float4::Broadcast(pg);
-  Float4 lr = Float4::Broadcast(learning_rate_);
-  Float4 lamb = Float4::Broadcast(regu_lambda_);
-  real_t* s = ZeroedScratch(aligned_k);
-  for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
-    // To avoid unseen feature
-    if (j1 >= num_feat) continue;
-    real_t v1 = entry.feat_val;
-    real_t *w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(v1*norm);
-    for (index_t d = 0; d < aligned_k; d += kAlign) {
-      Float4 sum = Float4::Load(s+d);
-      Float4 const weight = Float4::Load(w+d);
-      MulAdd(weight, val, sum).Store(s+d);
-    }
-  }
-  for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
-  // To avoid unseen feature
-    if (j1 >= num_feat) continue;
-    real_t v1 = entry.feat_val;
-    real_t *w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(v1*norm);
-    Float4 pgv = pg_all * val;
-    for(index_t d = 0; d < aligned_k; d += kAlign) {
-      Float4 sum = Float4::Load(s+d);
-      Float4 weight = Float4::Load(w+d);
-      Float4 grad = MulAdd(lamb, weight, pgv * NegMulAdd(weight, val, sum));
-      NegMulAdd(lr, grad, weight).Store(w+d);
-    }
+  LatentLayout lay = LayoutOf(model);
+  if (WideLanes(lay.aligned_k)) {
+    LatentSgd<8>(row, model, pg, norm, lay, s,
+                 learning_rate_, regu_lambda_);
+  } else {
+    LatentSgd<4>(row, model, pg, norm, lay, s,
+                 learning_rate_, regu_lambda_);
   }
 }
 
 // Calculate gradient and update current model using adagrad
-void FMScore::calc_grad_adagrad(const SparseRow* row,
+void FMScore::calc_grad_adagrad(RowRef row,
                                 Model& model,
                                 real_t pg,
-                                real_t norm) {
+                                real_t norm,
+                            const real_t* s) {
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/
   real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (const Node& entry : *row) {
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id*2];
     real_t &wlg = w[feat_id*2+1];
-    real_t g = regu_lambda_*wl+pg*entry.feat_val*sqrt_norm;
+    real_t g = regu_lambda_*wl+pg*row.val(n)*sqrt_norm;
     real_t cache = wlg + g*g;
     wlg = cache;
     wl -= learning_rate_ * g * InvSqrt(cache);
@@ -258,65 +411,36 @@ void FMScore::calc_grad_adagrad(const SparseRow* row,
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
-  index_t aligned_k = model.get_aligned_k();
-  index_t align0 = model.get_aligned_k() * 
-                   model.GetAuxiliarySize();
-  Float4 pg_all = Float4::Broadcast(pg);
-  Float4 lr = Float4::Broadcast(learning_rate_);
-  Float4 lamb = Float4::Broadcast(regu_lambda_);
-  real_t* s = ZeroedScratch(aligned_k);
-  for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
-    // To avoid unseen feature
-    if (j1 >= num_feat) continue;
-    real_t v1 = entry.feat_val;
-    real_t *w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(v1*norm);
-    for (index_t d = 0; d < aligned_k; d += kAlign) {
-      Float4 sum = Float4::Load(s+d);
-      Float4 const weight = Float4::Load(w+d);
-      MulAdd(weight, val, sum).Store(s+d);
-    }
-  }
-  for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
-    // To avoid unseen feature
-    if (j1 >= num_feat) continue;
-    real_t v1 = entry.feat_val;
-    real_t *w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(v1*norm);
-    Float4 pgv = pg_all * val;
-    for(index_t d = 0; d < aligned_k; d += kAlign) {
-      Float4 sum = Float4::Load(s+d);
-      Float4 weight = Float4::Load(w+d);
-      Float4 weight_grad = Float4::Load(w+aligned_k+d);
-      Float4 grad = MulAdd(lamb, weight, pgv * NegMulAdd(weight, val, sum));
-      weight_grad = MulAdd(grad, grad, weight_grad);
-      NegMulAdd(lr, RSqrt(weight_grad) * grad, weight).Store(w+d);
-      weight_grad.Store(w+aligned_k+d);
-    }
+  LatentLayout lay = LayoutOf(model);
+  if (WideLanes(lay.aligned_k)) {
+    LatentAdagrad<8>(row, model, pg, norm, lay, s,
+                     learning_rate_, regu_lambda_);
+  } else {
+    LatentAdagrad<4>(row, model, pg, norm, lay, s,
+                     learning_rate_, regu_lambda_);
   }
 }
 
 // Calculate gradient and update current model using ftrl
-void FMScore::calc_grad_ftrl(const SparseRow* row,
+void FMScore::calc_grad_ftrl(RowRef row,
                              Model& model,
                              real_t pg,
-                             real_t norm) {
+                             real_t norm,
+                            const real_t* s) {
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/
   real_t sqrt_norm = std::sqrt(norm);
   real_t *w = model.GetParameter_w();
   index_t num_feat = model.GetNumFeature();
-  for (const Node& entry : *row) {
-    index_t feat_id = entry.feat_id;
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
     // To avoid unseen feature
     if (feat_id >= num_feat) continue;
     real_t &wl = w[feat_id*3];
     real_t &wlg = w[feat_id*3+1];
     real_t &wlz = w[feat_id*3+2];
-    real_t g = lambda_2_*wl+pg*entry.feat_val*sqrt_norm; 
+    real_t g = lambda_2_*wl+pg*row.val(n)*sqrt_norm; 
     real_t old_wlg = wlg;
     wlg += g*g;
     real_t sigma = (std::sqrt(wlg)-std::sqrt(old_wlg)) * inv_alpha_;
@@ -351,59 +475,13 @@ void FMScore::calc_grad_ftrl(const SparseRow* row,
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
-  index_t aligned_k = model.get_aligned_k();
-  index_t align0 = model.get_aligned_k() * 
-                   model.GetAuxiliarySize();
-  Float4 pg_all = Float4::Broadcast(pg);
-  Float4 inv_alpha = Float4::Broadcast(inv_alpha_);
-  Float4 beta = Float4::Broadcast(beta_);
-  Float4 l1 = Float4::Broadcast(lambda_1_);
-  Float4 l2 = Float4::Broadcast(lambda_2_);
-  real_t* s = ZeroedScratch(aligned_k);
- for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
-    // To avoid unseen feature
-    if (j1 >= num_feat) continue;
-    real_t v1 = entry.feat_val;
-    real_t *w = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(v1*norm);
-    for (index_t d = 0; d < aligned_k; d += kAlign) {
-      Float4 sum = Float4::Load(s+d);
-      Float4 const weight = Float4::Load(w+d);
-      MulAdd(weight, val, sum).Store(s+d);
-    }
-  }
-  for (const Node& entry : *row) {
-    index_t j1 = entry.feat_id;
-    // To avoid unseen feature
-    if (j1 >= num_feat) continue;
-    real_t v1 = entry.feat_val;
-    real_t *w_base = model.GetParameter_v() + j1 * align0;
-    Float4 val = Float4::Broadcast(v1*norm);
-    Float4 pgv = pg_all * val;
-    for (index_t d = 0; d < aligned_k; d += kAlign) {
-      real_t* w = w_base + d;
-      real_t* wg = w_base + aligned_k + d;
-      real_t* z = w_base + aligned_k*2 + d;
-      Float4 sum = Float4::Load(s+d);
-      Float4 weight = Float4::Load(w);
-      Float4 weight_grad = Float4::Load(wg);
-      Float4 z_val = Float4::Load(z);
-      Float4 grad = MulAdd(l2, weight, pgv * NegMulAdd(weight, val, sum));
-      Float4 grad_sq = grad * grad;
-      Float4 sigma = (Sqrt(weight_grad + grad_sq)
-                      - Sqrt(weight_grad)) * inv_alpha;
-      z_val = NegMulAdd(sigma, weight, z_val + grad);
-      z_val.Store(z);
-      weight_grad = weight_grad + grad_sq;
-      weight_grad.Store(wg);
-      // Update w. Where |z| is inside the l1 band the weight is driven to
-      // zero, so the branch becomes a select over the whole vector.
-      Float4 numerator = CopySign(l1, z_val) - z_val;
-      Float4 denominator = MulAdd(beta + Sqrt(weight_grad), inv_alpha, l2);
-      IfThenZeroElse(Abs(z_val) <= l1,
-                     numerator / denominator).Store(w);
-    }
+  LatentLayout lay = LayoutOf(model);
+  if (WideLanes(lay.aligned_k)) {
+    LatentFtrl<8>(row, model, pg, norm, lay, s,
+                  inv_alpha_, beta_, lambda_1_, lambda_2_);
+  } else {
+    LatentFtrl<4>(row, model, pg, norm, lay, s,
+                  inv_alpha_, beta_, lambda_1_, lambda_2_);
   }
 }
 

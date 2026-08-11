@@ -257,7 +257,7 @@ real_t Trainer::calc_gradient(std::vector<Reader*>& reader) {
     for (;;) {
       index_t tmp = reader[i]->Samples(matrix);
       if (tmp == 0) { break; }
-      loss_->CalcGrad(matrix, *model_);
+      loss_->CalcGrad(matrix, *model_, reader[i]->Rows());
     }
   }
   return loss_->GetLoss();

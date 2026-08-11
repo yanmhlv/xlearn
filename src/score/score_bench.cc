@@ -69,7 +69,9 @@ index_t AuxiliarySize(const std::string& opt_type) {
 //------------------------------------------------------------------------------
 struct Workload {
   Model model;
-  std::vector<SparseRow> rows;
+  // The rows live in a DMatrix rather than one buffer each, so the walk here
+  // has the same locality as the training loop the numbers stand in for.
+  DMatrix matrix;
   index_t row_mask;
 };
 
@@ -86,18 +88,17 @@ Workload& GetWorkload(const Config& cfg) {
   slot.reset(new Workload());
   slot->model.Initialize(cfg.kind, "squared", cfg.num_feat, cfg.num_field,
                          cfg.num_K, AuxiliarySize(cfg.opt_type), kModelScale);
-  slot->rows.resize(cfg.num_rows);
   slot->row_mask = cfg.num_rows - 1;
+  slot->matrix.Reserve(cfg.num_rows, cfg.num_rows * cfg.num_nnz);
   // Scatter the feature ids with a linear congruential sequence so the access
   // pattern spreads over the feature space instead of running sequentially.
   index_t seed = 1;
   for (index_t r = 0; r < cfg.num_rows; ++r) {
-    slot->rows[r].resize(cfg.num_nnz);
+    slot->matrix.AddRow();
     for (index_t i = 0; i < cfg.num_nnz; ++i) {
       seed = seed * 1103515245 + 12345;
-      slot->rows[r][i].feat_id = (seed >> 8) % cfg.num_feat;
-      slot->rows[r][i].field_id = i % cfg.num_field;
-      slot->rows[r][i].feat_val = 1.0;
+      slot->matrix.AddNode(r, (seed >> 8) % cfg.num_feat, 1.0,
+                           i % cfg.num_field);
     }
   }
   return *slot;
@@ -119,7 +120,7 @@ void RunScore(benchmark::State& state, Config cfg) {
   index_t cursor = 0;
   for (auto _ : state) {
     benchmark::DoNotOptimize(
-        score.CalcScore(&workload.rows[cursor & workload.row_mask],
+        score.CalcScore(workload.matrix.Row(cursor & workload.row_mask),
                         workload.model, 1.0));
     ++cursor;
   }
@@ -136,7 +137,7 @@ void RunGrad(benchmark::State& state, Config cfg) {
   workload.model.Reset();
   index_t cursor = 0;
   for (auto _ : state) {
-    score.CalcGrad(&workload.rows[cursor & workload.row_mask],
+    score.CalcGrad(workload.matrix.Row(cursor & workload.row_mask),
                    workload.model, kPartialGrad, 1.0);
     ++cursor;
   }

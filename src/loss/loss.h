@@ -74,8 +74,8 @@ class Loss {
   virtual ~Loss() { }
 
   // This function needs to be invoked before using this class
-  void Initialize(Score* score, 
-                  ThreadPool* pool, 
+  void Initialize(Score* score,
+                  ThreadPool* pool,
                   bool norm = true,
                   bool lock_free = false) {
     CHECK_NOTNULL(score);
@@ -99,8 +99,13 @@ class Loss {
   // Given data sample and current model, calculate gradient
   // and update current model parameters.
   // This function will also accumulate loss value.
-  virtual void CalcGrad(const DMatrix* data_matrix, 
-                        Model& model) = 0;
+  //
+  // `rows`, when given, is the sequence the rows should be visited in -- see
+  // Reader::Rows(). Predict() takes none on purpose: its output has to stay
+  // lined up with Y.
+  virtual void CalcGrad(const DMatrix* data_matrix,
+                        Model& model,
+                        const std::vector<RowMeta>* rows) = 0;
 
   // Return the calculated loss value
   virtual real_t GetLoss() {
@@ -132,7 +137,6 @@ class Loss {
   real_t loss_sum_;
   /* Used to store the number of example */
   index_t total_example_;
-  /* Mini-batch size */
 
  private:
   DISALLOW_COPY_AND_ASSIGN(Loss);
