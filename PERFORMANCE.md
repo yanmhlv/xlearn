@@ -8,10 +8,27 @@ This is a record of decisions, not a tutorial. Where a decision is load-bearing
 in a way a reader of the code would not guess, the reasoning is also in a
 comment at the site; this file is the index.
 
-Terminology follows `CONTEXT.md`: an **Example** is one labelled observation, a
-**Node** is one of its non-zero entries, a **Row** is the slot an Example
-occupies in a **DMatrix**, and a **Row Reference** is a borrowed view of one
-Example's Nodes.
+## Terms
+
+Used consistently below, and in the code:
+
+- **Example** — one labelled observation: a set of feature values plus the
+  target the model is asked to reproduce.
+- **Feature** — one input dimension, identified by a zero-based feature id.
+  Absent features are omitted rather than stored as zero.
+- **Field** — a group of mutually exclusive features that came from the same
+  original categorical variable. Only FFM models read fields; LR and FM leave
+  every field id at zero.
+- **Node** — one non-zero entry of an Example: a feature id, its value, and its
+  field id. A DMatrix stores these as parallel columns rather than as a struct,
+  and omits a column the data never varies.
+- **Row** — the slot an Example occupies in a DMatrix. A Row is a position; the
+  Example is what sits there.
+- **DMatrix** — a contiguous run of Examples held in memory, with their labels
+  and normalizers.
+- **Row Reference** (`RowRef`) — a borrowed view of one Example's Nodes: the
+  columns and the length they share, owning nothing and outliving nothing. An
+  Example may legitimately have zero Nodes while still carrying a label.
 
 ---
 
