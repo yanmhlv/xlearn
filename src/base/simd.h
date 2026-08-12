@@ -95,11 +95,6 @@ class Vec {
   Register reg_;
 };
 
-// The width every model file's padding is guaranteed to divide, so the one a
-// kernel can always fall back to. Spelled as a literal rather than as kAlign
-// because that lives in src/data, which this header sits below.
-typedef Vec<4> Float4;
-
 template <int N>
 inline Vec<N> operator+(Vec<N> a, Vec<N> b) {
   return Vec<N>(hn::Add(a.reg(), b.reg()));

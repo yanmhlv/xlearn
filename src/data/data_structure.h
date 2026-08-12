@@ -67,8 +67,9 @@ struct MetricInfo {
 };
 
 //------------------------------------------------------------------------------
-// RowRef is a borrowed view of one row's features: three parallel columns and
-// the length they share. It owns nothing and is passed by value.
+// RowRef is a borrowed view of one row's features: the feature, field and
+// value of each, and the length they share. It owns nothing and is passed by
+// value.
 //
 // A column the data never varies is not stored at all: a libsvm file carries
 // no fields, and one-hot data carries no values but 1.0. Reading through
@@ -154,7 +155,7 @@ class RowBuffer {
 
 //------------------------------------------------------------------------------
 // DMatrix holds a run of rows in compressed sparse row form: an offset array
-// that cuts three parallel feature columns into rows.
+// that cuts the feature columns into rows.
 //
 // The columns are separate rather than interleaved because the three model
 // families do not read the same ones -- a linear or FM model never looks at a

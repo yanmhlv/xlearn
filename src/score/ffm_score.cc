@@ -97,9 +97,9 @@ inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
 // the compare, the branch and the pointer bumps that cost as much as the one
 // block they guard.
 template <int N, int AK>
-real_t LatentScore(const std::vector<Term>& terms,
-                   index_t runtime_k,
-                   real_t norm) {
+real_t LatentScoreAt(const std::vector<Term>& terms,
+                     index_t runtime_k,
+                     real_t norm) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
   const index_t kStep = Vec<N>::Lanes();
@@ -144,12 +144,12 @@ real_t LatentScore(const std::vector<Term>& terms,
 }
 
 template <int N, int AK>
-void LatentSgd(const std::vector<Term>& terms,
-               index_t runtime_k,
-               real_t pg,
-               real_t norm,
-               real_t learning_rate,
-               real_t regu_lambda) {
+void LatentSgdAt(const std::vector<Term>& terms,
+                 index_t runtime_k,
+                 real_t pg,
+                 real_t norm,
+                 real_t learning_rate,
+                 real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
@@ -178,12 +178,12 @@ void LatentSgd(const std::vector<Term>& terms,
 }
 
 template <int N, int AK>
-void LatentAdagrad(const std::vector<Term>& terms,
-                   index_t runtime_k,
-                   real_t pg,
-                   real_t norm,
-                   real_t learning_rate,
-                   real_t regu_lambda) {
+void LatentAdagradAt(const std::vector<Term>& terms,
+                     index_t runtime_k,
+                     real_t pg,
+                     real_t norm,
+                     real_t learning_rate,
+                     real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
@@ -220,14 +220,14 @@ void LatentAdagrad(const std::vector<Term>& terms,
 }
 
 template <int N, int AK>
-void LatentFtrl(const std::vector<Term>& terms,
-                index_t runtime_k,
-                real_t pg,
-                real_t norm,
-                real_t inv_alpha_val,
-                real_t beta_val,
-                real_t lambda_1_val,
-                real_t lambda_2_val) {
+void LatentFtrlAt(const std::vector<Term>& terms,
+                  index_t runtime_k,
+                  real_t pg,
+                  real_t norm,
+                  real_t inv_alpha_val,
+                  real_t beta_val,
+                  real_t lambda_1_val,
+                  real_t lambda_2_val) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
@@ -289,6 +289,74 @@ void LatentFtrl(const std::vector<Term>& terms,
   }
 }
 
+// Each of the four above under a compile-time plane length, so that the call
+// sites stay a choice of width and nothing else. See AK on LatentScoreAt()
+// for why the length is worth compiling in.
+template <int N>
+real_t LatentScore(const std::vector<Term>& terms,
+                   index_t aligned_k,
+                   real_t norm) {
+  if (aligned_k == 8) return LatentScoreAt<N, 8>(terms, aligned_k, norm);
+  if (aligned_k == 4) return LatentScoreAt<N, 4>(terms, aligned_k, norm);
+  return LatentScoreAt<N, 0>(terms, aligned_k, norm);
+}
+
+template <int N>
+void LatentSgd(const std::vector<Term>& terms,
+               index_t aligned_k,
+               real_t pg,
+               real_t norm,
+               real_t learning_rate,
+               real_t regu_lambda) {
+  if (aligned_k == 8) {
+    LatentSgdAt<N, 8>(terms, aligned_k, pg, norm, learning_rate, regu_lambda);
+  } else if (aligned_k == 4) {
+    LatentSgdAt<N, 4>(terms, aligned_k, pg, norm, learning_rate, regu_lambda);
+  } else {
+    LatentSgdAt<N, 0>(terms, aligned_k, pg, norm, learning_rate, regu_lambda);
+  }
+}
+
+template <int N>
+void LatentAdagrad(const std::vector<Term>& terms,
+                   index_t aligned_k,
+                   real_t pg,
+                   real_t norm,
+                   real_t learning_rate,
+                   real_t regu_lambda) {
+  if (aligned_k == 8) {
+    LatentAdagradAt<N, 8>(terms, aligned_k, pg, norm,
+                          learning_rate, regu_lambda);
+  } else if (aligned_k == 4) {
+    LatentAdagradAt<N, 4>(terms, aligned_k, pg, norm,
+                          learning_rate, regu_lambda);
+  } else {
+    LatentAdagradAt<N, 0>(terms, aligned_k, pg, norm,
+                          learning_rate, regu_lambda);
+  }
+}
+
+template <int N>
+void LatentFtrl(const std::vector<Term>& terms,
+                index_t aligned_k,
+                real_t pg,
+                real_t norm,
+                real_t inv_alpha_val,
+                real_t beta_val,
+                real_t lambda_1_val,
+                real_t lambda_2_val) {
+  if (aligned_k == 8) {
+    LatentFtrlAt<N, 8>(terms, aligned_k, pg, norm,
+                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
+  } else if (aligned_k == 4) {
+    LatentFtrlAt<N, 4>(terms, aligned_k, pg, norm,
+                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
+  } else {
+    LatentFtrlAt<N, 0>(terms, aligned_k, pg, norm,
+                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
+  }
+}
+
 } // namespace
 
 // y = sum( (V_i_fj*V_j_fi)(x_i * x_j) )
@@ -318,16 +386,9 @@ real_t FFMScore::CalcScore(RowRef row,
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
   const std::vector<Term>& terms = RowTerms(row, model, aux_size * aligned_k);
-  // The lane width, then the plane length where it is one of the two the
-  // kernels are compiled for -- see AK on LatentScore().
-  real_t sum_v;
-  if (WideLanes(aligned_k)) {
-    sum_v = aligned_k == 8 ? LatentScore<8, 8>(terms, aligned_k, norm)
-                           : LatentScore<8, 0>(terms, aligned_k, norm);
-  } else {
-    sum_v = aligned_k == 4 ? LatentScore<4, 4>(terms, aligned_k, norm)
-                           : LatentScore<4, 0>(terms, aligned_k, norm);
-  }
+  real_t sum_v = WideLanes(aligned_k)
+                     ? LatentScore<8>(terms, aligned_k, norm)
+                     : LatentScore<4>(terms, aligned_k, norm);
 
   return sum_v + sum_w;
 }
@@ -409,15 +470,9 @@ void FFMScore::calc_grad_sgd(RowRef row,
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
   if (WideLanes(aligned_k)) {
-    if (aligned_k == 8) {
-      LatentSgd<8, 8>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
-    } else {
-      LatentSgd<8, 0>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
-    }
-  } else if (aligned_k == 4) {
-    LatentSgd<4, 4>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
+    LatentSgd<8>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
   } else {
-    LatentSgd<4, 0>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
+    LatentSgd<4>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
   }
 }
 
@@ -456,19 +511,9 @@ void FFMScore::calc_grad_adagrad(RowRef row,
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
   if (WideLanes(aligned_k)) {
-    if (aligned_k == 8) {
-      LatentAdagrad<8, 8>(terms, aligned_k, pg, norm,
-                          learning_rate_, regu_lambda_);
-    } else {
-      LatentAdagrad<8, 0>(terms, aligned_k, pg, norm,
-                          learning_rate_, regu_lambda_);
-    }
-  } else if (aligned_k == 4) {
-    LatentAdagrad<4, 4>(terms, aligned_k, pg, norm,
-                        learning_rate_, regu_lambda_);
+    LatentAdagrad<8>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
   } else {
-    LatentAdagrad<4, 0>(terms, aligned_k, pg, norm,
-                        learning_rate_, regu_lambda_);
+    LatentAdagrad<4>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
   }
 }
 
@@ -487,19 +532,11 @@ void FFMScore::calc_grad_ftrl(RowRef row,
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
   if (WideLanes(aligned_k)) {
-    if (aligned_k == 8) {
-      LatentFtrl<8, 8>(terms, aligned_k, pg, norm,
-                       inv_alpha_, beta_, lambda_1_, lambda_2_);
-    } else {
-      LatentFtrl<8, 0>(terms, aligned_k, pg, norm,
-                       inv_alpha_, beta_, lambda_1_, lambda_2_);
-    }
-  } else if (aligned_k == 4) {
-    LatentFtrl<4, 4>(terms, aligned_k, pg, norm,
-                     inv_alpha_, beta_, lambda_1_, lambda_2_);
+    LatentFtrl<8>(terms, aligned_k, pg, norm,
+                  inv_alpha_, beta_, lambda_1_, lambda_2_);
   } else {
-    LatentFtrl<4, 0>(terms, aligned_k, pg, norm,
-                     inv_alpha_, beta_, lambda_1_, lambda_2_);
+    LatentFtrl<4>(terms, aligned_k, pg, norm,
+                  inv_alpha_, beta_, lambda_1_, lambda_2_);
   }
 }
 

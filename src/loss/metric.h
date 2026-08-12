@@ -509,7 +509,6 @@ class AUCMetric : public Metric {
     }
   }
 
-
   // Reset counters
   void Reset() {
     all_positive_number_.clear();

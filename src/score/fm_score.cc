@@ -313,7 +313,7 @@ void LatentFtrlAt(RowRef row,
 }
 
 // Each of the three above under a compile-time plane length, so that the call
-// sites stay a choice of optimizer and nothing else. See Accumulate() for why
+// sites stay a choice of width and nothing else. See Accumulate() for why
 // the length is worth compiling in.
 template <int N>
 void LatentSgd(RowRef row,

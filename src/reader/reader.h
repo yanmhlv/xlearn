@@ -45,12 +45,6 @@ const size_t kDefautBlockSize = 500;  // 500 MB
 // latency of its dependent multiplies on every one. Replacing it with
 // splitmix64 and a multiply-shift bound took this from 7.3% of an LR epoch to
 // 10.8%.
-// Fisher-Yates, over the metadata itself. mt19937 looks like the expensive
-// choice here and is not: it generates 624 words at a time, so a draw costs a
-// few cycles of buffer read, where a small stateless generator pays the full
-// latency of its dependent multiplies on every one. Replacing it with
-// splitmix64 and a multiply-shift bound took this from 7.3% of an LR epoch to
-// 10.8%.
 //
 // Which partner a step swaps with depends only on the step, never on the
 // array, so the draws can run ahead of the swaps -- far enough ahead that the
@@ -170,7 +164,7 @@ class Reader {
   }
 
   // The rows of the matrix from Samples(), in the order they should be
-  // visited, or null to walk it in its own.
+  // visited, or null to walk it in its own order.
   //
   // Shuffling is a property of the traversal, not of the data: permuting the
   // rows themselves would mean moving every feature of every one of them, once

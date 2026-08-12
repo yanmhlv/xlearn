@@ -58,19 +58,19 @@ class LinearScore : public Score {
   void calc_grad_sgd(RowRef row,
                      Model& model,
                      real_t pg,
-                     real_t norm = 1.0);
+                     real_t norm);
 
   // Calculate gradient and update model using adagrad
   void calc_grad_adagrad(RowRef row,
                          Model& model,
                          real_t pg,
-                         real_t norm = 1.0);
+                         real_t norm);
 
   // Calculate gradient and update model using ftrl
   void calc_grad_ftrl(RowRef row,
                       Model& model,
                       real_t pg,
-                      real_t norm = 1.0);
+                      real_t norm);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(LinearScore);
