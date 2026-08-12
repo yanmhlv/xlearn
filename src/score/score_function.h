@@ -145,11 +145,13 @@ class Score {
     real_t sqrt_n = std::sqrt(n);
     real_t sigma = (sqrt_n - sqrt_old_n) * inv_alpha_;
     real_t z = p[2] + (g - sigma * weight);
-    real_t sign = z > 0 ? 1.0f : -1.0f;
-    p[0] = sign * z <= lambda_1_
-               ? 0.0f
-               : (sign * lambda_1_ - z) /
-                     ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
+    // Both arms, then a select. Which way z falls is a coin toss the branch
+    // predictor cannot learn, and the mispredict costs more than the divide
+    // it was there to skip.
+    real_t sign = std::copysign(1.0f, z);
+    real_t weight_next = (sign * lambda_1_ - z) /
+                         ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
+    p[0] = std::fabs(z) <= lambda_1_ ? 0.0f : weight_next;
     p[1] = n;
     p[2] = z;
   }
