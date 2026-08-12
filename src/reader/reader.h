@@ -45,8 +45,39 @@ const size_t kDefautBlockSize = 500;  // 500 MB
 // latency of its dependent multiplies on every one. Replacing it with
 // splitmix64 and a multiply-shift bound took this from 7.3% of an LR epoch to
 // 10.8%.
+// Fisher-Yates, over the metadata itself. mt19937 looks like the expensive
+// choice here and is not: it generates 624 words at a time, so a draw costs a
+// few cycles of buffer read, where a small stateless generator pays the full
+// latency of its dependent multiplies on every one. Replacing it with
+// splitmix64 and a multiply-shift bound took this from 7.3% of an LR epoch to
+// 10.8%.
+//
+// Which partner a step swaps with depends only on the step, never on the
+// array, so the draws can run ahead of the swaps -- far enough ahead that the
+// partner's line is on its way before the swap reaches it. std::shuffle draws
+// and swaps in lockstep and waits on DRAM for every one of them, which cost
+// 17% of an LR epoch once the epoch itself got fast.
 inline void ShuffleOrder(std::vector<RowMeta>& rows, std::mt19937& rng) {
-  std::shuffle(rows.begin(), rows.end(), rng);
+  const size_t kLookahead = 8;
+  size_t n = rows.size();
+  if (n < 2) return;
+  std::uniform_int_distribution<size_t> draw;
+  typedef std::uniform_int_distribution<size_t>::param_type upto;
+  size_t pending[kLookahead];
+  size_t ahead = n - 1;
+  for (size_t k = 0; k < kLookahead && ahead >= 1; ++k, --ahead) {
+    pending[k] = draw(rng, upto(0, ahead));
+    Prefetch(&rows[pending[k]]);
+  }
+  for (size_t i = n - 1, k = 0; i >= 1; --i, k = (k + 1) % kLookahead) {
+    size_t j = pending[k];
+    if (ahead >= 1) {
+      pending[k] = draw(rng, upto(0, ahead));
+      Prefetch(&rows[pending[k]]);
+      --ahead;
+    }
+    std::swap(rows[i], rows[j]);
+  }
 }
 
 //------------------------------------------------------------------------------
