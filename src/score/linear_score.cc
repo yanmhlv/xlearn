@@ -127,49 +127,7 @@ void LinearScore::calc_grad_ftrl(RowRef row,
                                  Model& model,
                                  real_t pg,
                                  real_t norm) {
-  // linear term
-  real_t sqrt_norm = std::sqrt(norm);
-  real_t *w = model.GetParameter_w();
-  index_t num_feat = model.GetNumFeature();
-  for (index_t n = 0; n < row.len; ++n) {
-    index_t feat_id = row.feat(n);
-    // To avoid unseen feature
-    if (feat_id >= num_feat) continue;
-    real_t &wl = w[feat_id*3];
-    real_t &wlg = w[feat_id*3+1];
-    real_t &wlz = w[feat_id*3+2];
-    real_t g = lambda_2_*wl+pg*row.val(n)*sqrt_norm; 
-    real_t old_wlg = wlg;
-    wlg += g*g;
-    real_t sigma = (std::sqrt(wlg)-std::sqrt(old_wlg)) * inv_alpha_;
-    wlz += (g-sigma*wl);
-    int sign = wlz > 0 ? 1:-1;
-    if (sign*wlz <= lambda_1_) {
-      wl = 0;
-    } else {
-      wl = (sign*lambda_1_-wlz) / 
-           ((beta_ + std::sqrt(wlg)) *
-            inv_alpha_ + lambda_2_);
-    }
-  }
-  // bias
-  w = model.GetParameter_b();
-  real_t &wb = w[0];
-  real_t &wbg = w[1];
-  real_t &wbz = w[2];
-  real_t g = pg;
-  real_t old_wbg = wbg;
-  wbg += g*g;
-  real_t sigma = (std::sqrt(wbg)-std::sqrt(old_wbg)) * inv_alpha_;
-  wbz += (g-sigma*wb);
-  int sign = wbz > 0 ? 1:-1;
-  if (sign*wbz <= lambda_1_) {
-    wb = 0;
-  } else {
-    wb = (sign*lambda_1_-wbz) / 
-         ((beta_ + std::sqrt(wbg)) *
-          inv_alpha_ + lambda_2_);
-  }
+  this->ftrl_linear_grad(row, model, pg, norm);
 }
 
 } // namespace xLearn

@@ -22,6 +22,7 @@ FM score, FFM score, and etc.
 #ifndef XLEARN_LOSS_SCORE_FUNCTION_H_
 #define XLEARN_LOSS_SCORE_FUNCTION_H_
 
+#include <cmath>
 #include <vector>
 
 #include "src/base/common.h"
@@ -130,6 +131,47 @@ class Score {
   }
 
  protected:
+  // One ftrl-proximal step over the three slots at p -- the weight, the sum
+  // of squared gradients, and the dual accumulator -- read into registers and
+  // written back once.
+  //
+  // Taken as references into the parameter array instead, the three alias one
+  // another as far as the compiler can prove, so the store to z forces a
+  // reload and a second square root of a sum the line above already has.
+  void ftrl_update(real_t* p, real_t g) {
+    real_t weight = p[0];
+    real_t sqrt_old_n = std::sqrt(p[1]);
+    real_t n = p[1] + g * g;
+    real_t sqrt_n = std::sqrt(n);
+    real_t sigma = (sqrt_n - sqrt_old_n) * inv_alpha_;
+    real_t z = p[2] + (g - sigma * weight);
+    real_t sign = z > 0 ? 1.0f : -1.0f;
+    p[0] = sign * z <= lambda_1_
+               ? 0.0f
+               : (sign * lambda_1_ - z) /
+                     ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
+    p[1] = n;
+    p[2] = z;
+  }
+
+  // The ftrl update of the linear weights and the bias, shared by all three
+  // score functions: the rule is the same wherever a feature has one weight,
+  // and only the latent term below it differs.
+  void ftrl_linear_grad(RowRef row, Model& model, real_t pg, real_t norm) {
+    real_t sqrt_norm = std::sqrt(norm);
+    real_t* w = model.GetParameter_w();
+    index_t num_feat = model.GetNumFeature();
+    for (index_t n = 0; n < row.len; ++n) {
+      index_t feat_id = row.feat(n);
+      // To avoid unseen feature
+      if (feat_id >= num_feat) continue;
+      real_t* p = w + feat_id * 3;
+      this->ftrl_update(p, lambda_2_ * p[0] + pg * row.val(n) * sqrt_norm);
+    }
+    // bias
+    this->ftrl_update(model.GetParameter_b(), pg);
+  }
+
   real_t learning_rate_;
   real_t regu_lambda_;
   real_t alpha_;
