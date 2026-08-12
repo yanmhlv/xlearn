@@ -17,6 +17,18 @@ xLearn is a ***high performance***, ***easy-to-use***, and ***scalable*** machin
 
 xLearn is developed by high-performance C++ code with careful design and optimizations. Our system is designed to maximize CPU and memory utilization, provide cache-aware computation, and support lock-free learning. By combining these insights, xLearn is 5x-13x faster compared to similar systems.
 
+**This fork goes further.** Examples are stored as compressed sparse columns instead of a heap-allocated vector of nodes each, the SIMD width is chosen per call rather than fixed at four lanes, FFM latent blocks are planar, and each Example's features and a large model's parameters are fetched ahead of the Example that needs them. Measured against the previous release on 300k Examples of synthetic CTR data, one pinned core, single thread:
+
+| model | time, k=8 | time, k=4 | peak memory |
+|---|---|---|---|
+| LR | −51% to −62% | −52% to −60% | 0.40x |
+| FM | −52% to −59% | −53% to −59% | 0.40x |
+| FFM | −31% to −42% | −24% to −40% | 0.61x |
+
+Held-out AUC is equal or better in 8 of 9 model/optimizer combinations, and two long-standing correctness bugs — a shuffle that produced the same order every epoch, and an FTRL accumulator initialised to the wrong value — are fixed along the way.
+
+[PERFORMANCE.md](PERFORMANCE.md) records each optimization, the measurement that settled it, and the eight approaches that were implemented, measured and rejected. [CHANGELOG.md](CHANGELOG.md) has the full list of changes.
+
 ### Ease-of-use
 
 <img src="https://github.com/aksnzhy/xLearn/raw/master/img/code.png" width = "600"/>
@@ -43,6 +55,18 @@ xLearn has been developed and used by many active community members. Your help i
 Note that, please post iusse and contribution in *English* so that everyone can get help from them.
 
 ## What's New
+
+ - 2026-08-12 Training is 1.3-2.6x faster and uses 1.6-2.5x less memory. Main update:
+
+    * Examples stored as compressed sparse columns, with columns the data never varies elided
+    * Per-call SIMD width, planar FFM latent blocks, and Example-ahead prefetching
+    * Fixed a shuffle that produced the same order every epoch, and FTRL's `z` initialisation
+    * Versioned the `.model` and `.bin` formats, which had neither magic bytes nor a version
+
+    **Breaking:** `.model` checkpoints trained at k > 4 must be retrained — see
+    [CHANGELOG.md](CHANGELOG.md). `.bin` data caches regenerate on their own.
+    [PERFORMANCE.md](PERFORMANCE.md) explains what was optimized and what was tried
+    and rejected.
 
  - 2019-10-13 [Andrew Kane](https://github.com/ankane) add [Ruby bindings](https://github.com/ankane/xlearn) for xLearn!
 
