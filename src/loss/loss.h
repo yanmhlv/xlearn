@@ -34,6 +34,51 @@ function or objective function.
 
 namespace xLearn {
 
+// The metadata of row i of a batch, having started the fetch of a row a
+// little further along -- and of the parameters of a row between the two,
+// where the model is large enough for that to pay.
+//
+// A shuffled epoch reads its metadata in order and its columns at random, so
+// the column fetch is the one with nowhere to hide. Four rows ahead is far
+// enough to cover the miss and near enough that the line is still there when
+// the row is scored.
+//
+// Which parameters a row reads is a function of its feature ids, so that
+// fetch cannot be issued until they have themselves arrived -- hence the
+// second, nearer stage. Unlike the columns, which are always larger than any
+// cache, the parameters may be small enough to stay resident, and then the
+// hints are pure cost.
+inline RowMeta NextRow(const DMatrix* matrix,
+                       const std::vector<RowMeta>* rows,
+                       Score* score_func,
+                       Model* model,
+                       bool prefetch_params,
+                       size_t i,
+                       size_t end) {
+  const size_t kRowDistance = 4;
+  const size_t kParamDistance = 2;
+  if (i + kRowDistance < end) {
+    size_t ahead = i + kRowDistance;
+    matrix->PrefetchRow(rows == nullptr ? matrix->Meta(ahead) : (*rows)[ahead]);
+  }
+  if (prefetch_params && i + kParamDistance < end) {
+    size_t soon = i + kParamDistance;
+    RowMeta m = rows == nullptr ? matrix->Meta(soon) : (*rows)[soon];
+    score_func->PrefetchParams(matrix->Row(m), *model);
+  }
+  return rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+}
+
+// Whether a model is large enough that fetching its parameters early is worth
+// the hints. The threshold sits near the cache a core keeps to itself: below
+// it the parameters stay resident between rows and the hints buy nothing.
+inline bool WantsParamPrefetch(Model& model) {
+  const size_t kMinBytes = 8u << 20;
+  size_t floats = size_t(model.GetNumParameter_w()) +
+                  size_t(model.GetNumParameter_v());
+  return floats * sizeof(real_t) >= kMinBytes;
+}
+
 //------------------------------------------------------------------------------
 // The Loss is an abstract class, which can be implemented by the real
 // loss functions such as cross-entropy loss (cross_entropy_loss.h),
@@ -74,20 +119,17 @@ class Loss {
   virtual ~Loss() { }
 
   // This function needs to be invoked before using this class
-  void Initialize(Score* score, 
-                  ThreadPool* pool, 
+  void Initialize(Score* score,
+                  ThreadPool* pool,
                   bool norm = true,
-                  bool lock_free = false,
-                  index_t batch_size = 0) {
+                  bool lock_free = false) {
     CHECK_NOTNULL(score);
     CHECK_NOTNULL(pool);
-    CHECK_GE(batch_size, 0);
     score_func_ = score;
     pool_ = pool;
     norm_ = norm;
     threadNumber_ = pool_->ThreadNumber();
     lock_free_ = lock_free;
-    batch_size_ = batch_size;
   }
 
   // Given predictions and labels, accumulate loss value.
@@ -102,16 +144,13 @@ class Loss {
   // Given data sample and current model, calculate gradient
   // and update current model parameters.
   // This function will also accumulate loss value.
-  virtual void CalcGrad(const DMatrix* data_matrix, 
-                        Model& model) = 0;
-
-  // Given data sample and current model, calculate gradient.
-  // Note that this method doesn't update local model, and the
-  // gradient will be pushed to the parameter server, which is 
-  // used for distributed computation.
-  virtual void CalcGradDist(DMatrix* data_matrix,
-                            Model& model,
-                            std::vector<real_t>& grad);
+  //
+  // `rows`, when given, is the sequence the rows should be visited in -- see
+  // Reader::Rows(). Predict() takes none on purpose: its output has to stay
+  // lined up with Y.
+  virtual void CalcGrad(const DMatrix* data_matrix,
+                        Model& model,
+                        const std::vector<RowMeta>* rows) = 0;
 
   // Return the calculated loss value
   virtual real_t GetLoss() {
@@ -143,8 +182,6 @@ class Loss {
   real_t loss_sum_;
   /* Used to store the number of example */
   index_t total_example_;
-  /* Mini-batch size */
-  index_t batch_size_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(Loss);

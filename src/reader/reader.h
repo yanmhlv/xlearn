@@ -39,9 +39,39 @@ namespace xLearn {
 
 const size_t kDefautBlockSize = 500;  // 500 MB
 
-inline void ShuffleOrder(std::vector<index_t>& order, int seed) {
-  std::mt19937 rng(seed);
-  std::shuffle(order.begin(), order.end(), rng);
+// Fisher-Yates, over the metadata itself. mt19937 looks like the expensive
+// choice here and is not: it generates 624 words at a time, so a draw costs a
+// few cycles of buffer read, where a small stateless generator pays the full
+// latency of its dependent multiplies on every one. Replacing it with
+// splitmix64 and a multiply-shift bound took this from 7.3% of an LR epoch to
+// 10.8%.
+//
+// Which partner a step swaps with depends only on the step, never on the
+// array, so the draws can run ahead of the swaps -- far enough ahead that the
+// partner's line is on its way before the swap reaches it. std::shuffle draws
+// and swaps in lockstep and waits on DRAM for every one of them, which cost
+// 17% of an LR epoch once the epoch itself got fast.
+inline void ShuffleOrder(std::vector<RowMeta>& rows, std::mt19937& rng) {
+  const size_t kLookahead = 8;
+  size_t n = rows.size();
+  if (n < 2) return;
+  std::uniform_int_distribution<size_t> draw;
+  typedef std::uniform_int_distribution<size_t>::param_type upto;
+  size_t pending[kLookahead];
+  size_t ahead = n - 1;
+  for (size_t k = 0; k < kLookahead && ahead >= 1; ++k, --ahead) {
+    pending[k] = draw(rng, upto(0, ahead));
+    Prefetch(&rows[pending[k]]);
+  }
+  for (size_t i = n - 1, k = 0; i >= 1; --i, k = (k + 1) % kLookahead) {
+    size_t j = pending[k];
+    if (ahead >= 1) {
+      pending[k] = draw(rng, upto(0, ahead));
+      Prefetch(&rows[pending[k]]);
+      --ahead;
+    }
+    std::swap(rows[i], rows[j]);
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -123,9 +153,9 @@ class Reader {
     bin_out_ = false;  
   }
 
-  // Set random see
+  // Set random seed
   void SetSeed(int seed) {
-    seed_ = seed;
+    rng_.seed(seed);
   }
 
   // If shuffle data ?
@@ -133,11 +163,20 @@ class Reader {
     shuffle_ = shuffle;
   }
 
+  // The rows of the matrix from Samples(), in the order they should be
+  // visited, or null to walk it in its own order.
+  //
+  // Shuffling is a property of the traversal, not of the data: permuting the
+  // rows themselves would mean moving every feature of every one of them, once
+  // per epoch. What is permuted instead is this array of RowMeta rather than an
+  // array of indices, so that the walk over it stays sequential -- see RowMeta.
+  // Only the gradient walk takes this: Predict() must leave pred[i] lined up
+  // with Y[i].
+  virtual const std::vector<RowMeta>* Rows() const { return nullptr; }
+
  protected:
   /* Input file name */
   std::string filename_;
-  /* Sample() returns this data sample */
-  DMatrix data_samples_;
   /* Parser for a block of memory buffer */
   Parser* parser_;
   /* If this data has label y ?
@@ -150,12 +189,16 @@ class Reader {
   bool bin_out_;
   /* Split string for data items */
   std::string splitor_;
-  /* A block of memory to store the data */
-  char* block_;
+  /* A block of memory to store the data. Owned: the paths that allocate it and
+  the paths that do not both reach the destructor, and only one of them has a
+  buffer to release. */
+  scoped_array<char> block_;
   /* Block size */
   size_t block_size_;
-  /* Random seed */
-  int seed_ = 1;
+  /* Draws the shuffle order. Carried across epochs rather than re-seeded at
+  each one, so every epoch visits the rows in a different permutation --
+  reshuffling is what makes SGD converge faster than a fixed order. */
+  std::mt19937 rng_{1};
 
   // Check current file format and return
   // "libsvm", "ffm", or "csv".
@@ -201,10 +244,11 @@ class InmemReader : public Reader {
   // Free the memory of data matrix.
   virtual void Clear() {
     data_buf_.Reset();
-    data_samples_.Reset();
-    if (block_ != nullptr) {
-      delete [] block_;
-    }
+  }
+
+  // Rows are walked through this rather than copied into shuffled order.
+  const std::vector<RowMeta>* Rows() const {
+    return shuffle_ ? &rows_ : nullptr;
   }
 
   // Return the Reader type
@@ -215,8 +259,8 @@ class InmemReader : public Reader {
   // If shuffle data ?
   virtual inline void SetShuffle(bool shuffle) {
     this->shuffle_ = shuffle;
-    if (shuffle_ && !order_.empty()) {
-      ShuffleOrder(order_, this->seed_);
+    if (shuffle_ && !rows_.empty()) {
+      ShuffleOrder(rows_, this->rng_);
     }
   }
 
@@ -226,7 +270,7 @@ class InmemReader : public Reader {
   }
 
  protected:
-  /* Reader will load all the data 
+  /* Reader will load all the data
   into this buffer */
   DMatrix data_buf_;
   /* Number of record at each sampling */
@@ -234,7 +278,7 @@ class InmemReader : public Reader {
   /* Position for sampling */
   index_t pos_;
   /* For random shuffle */
-  std::vector<index_t> order_;
+  std::vector<RowMeta> rows_;
 
   // Check whehter current path has a binary file.
   bool hash_binary(const std::string& filename);
@@ -277,9 +321,6 @@ class OndiskReader : public Reader {
   // Free the memory of data matrix.
   virtual void Clear() {
     data_samples_.Reset();
-    if (block_ != nullptr) {
-      delete [] block_;
-    }
   }
 
   // Return the Reader type
@@ -296,6 +337,9 @@ class OndiskReader : public Reader {
   }
 
  protected:
+  /* Sample() parses each block into this. The only reader that still needs a
+  matrix of its own: the in-memory ones hand back the buffer they loaded. */
+  DMatrix data_samples_;
   /* Maintain the file pointer */
   FILE* file_ptr_; 
  
@@ -317,13 +361,9 @@ class FromDMReader : public Reader {
   // Return to the beginning of the data.
   virtual void Reset() { pos_ = 0; }
 
-  // Free the memory of data matrix.
-  virtual void Clear() {
-    data_samples_.Reset();
-    if (block_ != nullptr) {
-      delete [] block_;
-    }
-  }
+  // Free the memory of data matrix. The matrix is owned by whoever handed it
+  // to Initialize(), so there is nothing here to release.
+  virtual void Clear() { }
 
   // Return the Reader type
   virtual std::string Type() {
@@ -333,9 +373,14 @@ class FromDMReader : public Reader {
   // If shuffle data ?
   virtual inline void SetShuffle(bool shuffle) {
     this->shuffle_ = shuffle;
-    if (shuffle_ && !order_.empty()) {
-      ShuffleOrder(order_, this->seed_);
+    if (shuffle_ && !rows_.empty()) {
+      ShuffleOrder(rows_, this->rng_);
     }
+  }
+
+  // Rows are walked through this rather than copied into shuffled order.
+  const std::vector<RowMeta>* Rows() const {
+    return shuffle_ ? &rows_ : nullptr;
   }
 
  protected:
@@ -345,7 +390,7 @@ class FromDMReader : public Reader {
   /* Position for sampling */
   index_t pos_;
   /* For random shuffle */
-  std::vector<index_t> order_;
+  std::vector<RowMeta> rows_;
 
 
  private:

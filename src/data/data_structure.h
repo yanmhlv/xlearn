@@ -22,8 +22,6 @@ This file defines the basic data structures.
 #define XLEARN_DATA_DATA_STRUCTURE_H_
 
 #include <vector>
-#include <unordered_set>
-#include <unordered_map>
 #include <algorithm>
 
 #include "src/base/common.h"
@@ -45,16 +43,19 @@ typedef float real_t;
 typedef uint32 index_t;
 
 //------------------------------------------------------------------------------
-// Mapping sparse feature to dense feature. Used by distributed computation.
-//------------------------------------------------------------------------------
-typedef std::unordered_map<index_t, index_t> feature_map;
-
-//------------------------------------------------------------------------------
 // We use SIMD to accelerate our training, and hence some
 // parameters will be aligned.
 //------------------------------------------------------------------------------
 const int kAlign = 4;
-const int kAlignByte = 16;
+const int kAlignByte = kAlign * sizeof(real_t);
+
+//------------------------------------------------------------------------------
+// What the latent factors are allocated on. A cache line rather than one
+// vector's worth: the wide latent path issues 32-byte loads, and starting the
+// array at merely kAlignByte would put every other one across a line boundary
+// -- which costs more than the wider vector saves.
+//------------------------------------------------------------------------------
+const int kCacheLineByte = 64;
 
 //------------------------------------------------------------------------------
 // MetricInfo stores the evaluation metric information, which
@@ -66,63 +67,123 @@ struct MetricInfo {
 };
 
 //------------------------------------------------------------------------------
-// Node is used to store information for each column of the feature vector.
-// For tasks like LR and FM, we just need to store the feature id and the 
-// feature value. While for tasks like FFM, we also need to store field id.
+// RowRef is a borrowed view of one row's features: the feature, field and
+// value of each, and the length they share. It owns nothing and is passed by
+// value.
+//
+// A column the data never varies is not stored at all: a libsvm file carries
+// no fields, and one-hot data carries no values but 1.0. Reading through
+// val() and field() is what lets one set of kernels serve both shapes -- and
+// what lets a linear model touch four bytes per feature where the field, the
+// feature and the value stored together cost twelve, two thirds of which it
+// never read.
+//
+// Feature and field ids share one array rather than getting one each, because
+// nothing reads a field without also reading its feature. Separating them
+// turned FFM's one random access per row into two into distant arrays, which
+// measured 12-14% slower even though it moved fewer bytes.
+//
+// A RowRef points into vectors that grow, so it is invalidated by the next
+// AddNode() on the matrix it came from.
 //------------------------------------------------------------------------------
-struct Node {
-  // Default constructor
-  Node() { }
-  Node(index_t field, index_t feat, real_t val)
-   : field_id(field), 
-     feat_id(feat), 
-     feat_val(val) { }
-  /* Field id is start from 0 */
-  index_t field_id;
-  /* Feature id is start from 0 */ 
-  index_t feat_id;
-  /* Feature value */ 
-  real_t feat_val;
+struct RowRef {
+  /* Feature ids, each followed by its field id when stride is 2 */
+  const index_t* keys = nullptr;
+  const real_t* vals = nullptr;  /* len entries, or null when all are 1.0 */
+  index_t len = 0;
+  /* 2 when the data carries fields, 1 when it does not */
+  index_t stride = 1;
+
+  inline index_t feat(index_t i) const { return keys[i * stride]; }
+  inline index_t field(index_t i) const {
+    return stride == 2 ? keys[i * stride + 1] : 0;
+  }
+  inline real_t val(index_t i) const { return vals == nullptr ? 1.0f : vals[i]; }
 };
 
 //------------------------------------------------------------------------------
-// SparseRow is used to store one line of the data, which
-// is represented as a vector of the Node data structure.
+// Everything about one row except its features: its label, its normalizer, and
+// where in the feature columns it lives.
+//
+// This is what a caller walking the rows in an order of its own carries, in
+// place of an index into the matrix. An index costs four random accesses per
+// row -- into Y, into norm, and into both ends of offset -- where a gathered
+// array of these is read straight through and leaves only the features random.
+// On a shuffled FFM epoch that difference measured 174 ms against 115.
 //------------------------------------------------------------------------------
-typedef std::vector<Node> SparseRow;
+struct RowMeta {
+  index_t begin;
+  index_t len;
+  real_t y;
+  real_t norm;
+};
 
 //------------------------------------------------------------------------------
-// DMatrix (data matrix) is used to store a batch of the dataset.
-// It can be the whole dataset used in in-memory training, or just a
-// working set used in on-disk training. This is because for many 
-// large-scale machine learning problems, we cannot load all the data into 
-// memory at once, and hence we have to load a small batch of dataset in 
-// DMatrix at each samplling for training or prediction.  
+// One row's features, owned. DMatrix hands out RowRefs into its own columns;
+// this is for the callers that have a row and no matrix to put it in -- the
+// score tests and benchmarks, and scoring a single example.
+//------------------------------------------------------------------------------
+class RowBuffer {
+ public:
+  void Add(index_t feat_id, real_t feat_val, index_t field_id = 0) {
+    keys_.push_back(feat_id);
+    keys_.push_back(field_id);
+    vals_.push_back(feat_val);
+  }
+
+  void Clear() {
+    keys_.clear();
+    vals_.clear();
+  }
+
+  // Always stride 2 -- a hand-built row is a handful of nodes in a test or a
+  // benchmark, so the storage never matters and keeping one shape here keeps
+  // the conversion trivial.
+  operator RowRef() const {
+    RowRef row;
+    row.keys = keys_.data();
+    row.vals = vals_.data();
+    row.len = vals_.size();
+    row.stride = 2;
+    return row;
+  }
+
+ private:
+  std::vector<index_t> keys_;
+  std::vector<real_t> vals_;
+};
+
+//------------------------------------------------------------------------------
+// DMatrix holds a run of rows in compressed sparse row form: an offset array
+// that cuts the feature columns into rows.
+//
+// The columns are separate rather than interleaved because the three model
+// families do not read the same ones -- a linear or FM model never looks at a
+// field. A column the data never varies is not stored at all, and Row() hands
+// out a null pointer for it. Together that is the difference between ~44 and
+// ~132 bytes of node per row on libsvm data, which is the difference between
+// an epoch streaming out of cache and out of DRAM.
+//
 // We can use the DMatrix like this:
 //
 //    DMatrix matrix;
 //    for (int i = 0; i < 10; ++i) {
 //      matrix.AddRow();
 //      matrix.Y[i] = 0;
-//      matrix.norm[i] = 1.0;
 //      matrix.AddNode(i, feat_id, feat_val, field_id);
 //    }
 //
 //    /* Serialize and Deserialize */
 //    matrix.Serialize("/tmp/test.bin");
 //    DMatrix new_matrix;
-//    /* The new matrix is the same with old matrix */
 //    new_matrix.Deserialize("/tmp/test.bin");
 //
 //    /* We can access the matrix */
-//    for (int i = 0; i < matrix.row_length; ++i) {
-//      ... matrix.Y[i] ..   /* access y */
-//      SparseRow *row = matrix.row[i];
-//      for (SparseRow::iterator iter = row->begin();
-//           iter != row->end(); ++iter) {
-//        ... iter->field_id ...   /* access field_id */
-//        ... iter->feat_id ...    /* access feat_id */
-//        ... iter->feat_val ...   /* access feat_val */
+//    for (index_t i = 0; i < matrix.row_length; ++i) {
+//      ... matrix.Y[i] ...          /* access y */
+//      RowRef r = matrix.Row(i);
+//      for (index_t j = 0; j < r.len; ++j) {
+//        ... r.feat(j) ... r.val(j) ... r.field(j) ...
 //      }
 //    }
 //
@@ -130,90 +191,151 @@ typedef std::vector<Node> SparseRow;
 //    index_t max_feat = matrix.MaxFeat();
 //    index_t max_field = matrix.MaxField();
 //------------------------------------------------------------------------------
+
+//------------------------------------------------------------------------------
+// A binary cache carries no schema, so nothing in the file says which layout
+// wrote it, and the only other gate is a hash of the *text* the cache was
+// built from -- which a cache written by an older build passes. The magic
+// comes first so that such a file fails on its opening bytes rather than
+// being read as this layout's rows; the version is bumped whenever the body
+// below changes. A reader that does not recognize either regenerates.
+//------------------------------------------------------------------------------
+const uint64 kDMatrixMagic = 0x584C4E5F444D5458ULL;  // "XTMD_NLX" on disk
+
+// Bump this whenever anything below Serialize()'s header changes -- the field
+// order, a column's encoding, key_stride's meaning. A stale cache whose magic
+// and version still match is read as the current layout and takes the process
+// down with it, which is not a hypothetical: it happened once during the move
+// to interleaved keys, because the body changed and this did not.
+const uint32 kDMatrixVersion = 2;
+
 struct DMatrix {
-  // Constructor
-  DMatrix()
-   : hash_value_1(0), 
-     hash_value_2(0),
-     row_length(0),
-     row(0),
-     Y(0),
-     norm(0),
-     has_label(false),
-     pos(0) { }
+  DMatrix() { }
 
-  // Destructor
-  ~DMatrix() { }
-
-  // ReAlloc memory for the DMatrix.
-  // This function will first release the original
-  // memory allocated for the DMatrix, and then re-allocate 
-  // memory for this new matrix. For some dataset, it does not
-  // contains the label y, and hence we need to set the 
-  // has_label variable to false. On default, this value will
-  // be set to true.
-  void ReAlloc(size_t length, bool label = true) {
-    CHECK_GE(length, 0);
-    this->Reset();
-    this->hash_value_1 = 0;
-    this->hash_value_2 = 0;
-    this->row_length = length;
-    this->row.resize(length, nullptr);
-    this->Y.resize(length, 0);
-    // Here we set norm to 1.0 by default, which means
-    // that we don't use instance-wise normalization
-    this->norm.resize(length, 1.0);
-    // Indicate that if current dataset has the label y
-    this->has_label = label;
-    this->pos = 0;
+  // The view of row i. Invalidated by the next AddNode().
+  inline RowRef Row(index_t i) const {
+    return Row(Meta(i));
   }
 
-  // Reset memory for DMatrix.
-  void Reset() {
-    this->has_label = true;
-    this->hash_value_1 = 0;
-    this->hash_value_2 = 0;
-    // Delete Y
-    std::vector<real_t>().swap(this->Y);
-    // Delete Node
-    for (int i = 0; i < this->row_length; ++i) {
-      if ((this->row)[i] != nullptr) {
-        STLDeleteElementsAndClear(&(this->row));
-      }
+  // The view of the row a RowMeta was taken from.
+  inline RowRef Row(const RowMeta& meta) const {
+    RowRef r;
+    r.keys = keys.data() + meta.begin * key_stride;
+    r.vals = vals.empty() ? nullptr : vals.data() + meta.begin;
+    r.len = meta.len;
+    r.stride = key_stride;
+    return r;
+  }
+
+  inline RowMeta Meta(index_t i) const {
+    RowMeta m;
+    m.begin = offset[i];
+    m.len = offset[i+1] - m.begin;
+    m.y = Y[i];
+    m.norm = norm[i];
+    return m;
+  }
+
+  // Start fetching the columns of the row a RowMeta names, without waiting.
+  //
+  // A shuffled epoch reads its metadata in order and its columns at random,
+  // so this is the fetch that has nowhere to hide: issued far enough ahead,
+  // the line has arrived by the time the row is scored. A hint only -- the
+  // epoch trains bit-identically with it removed.
+  inline void PrefetchRow(const RowMeta& meta) const {
+    Prefetch(keys.data() + meta.begin * key_stride);
+    if (!vals.empty()) {
+      Prefetch(vals.data() + meta.begin);
     }
-    // Delete SparseRow
-    std::vector<SparseRow*>().swap(this->row);
-    // Delete norm
-    std::vector<real_t>().swap(this->norm);
-    this->row_length = 0;
-    this->pos = 0;
   }
 
-  // Dynamically adding new row for current DMatrix.
-  // The SparseRow is allocated here rather than on the first AddNode: a
-  // record can carry a label and no features at all, and every reader of
-  // this matrix dereferences row[i] without checking it.
+  // Every row's metadata in one array, for a caller that wants to visit the
+  // rows in an order of its own -- it permutes this and walks it, rather than
+  // permuting indices and paying to look each one up.
+  void GatherRows(std::vector<RowMeta>* rows) const {
+    rows->resize(row_length);
+    for (index_t i = 0; i < row_length; ++i) {
+      (*rows)[i] = Meta(i);
+    }
+  }
+
+  // Empty the matrix but keep the buffers, so a reader that parses block after
+  // block into the same matrix does not hand a large arena back to the
+  // allocator and immediately grow it again.
+  void Clear() {
+    row_length = 0;
+    offset.assign(1, 0);
+    keys.clear();
+    vals.clear();
+    key_stride = 1;
+    Y.clear();
+    norm.clear();
+    max_feat = 0;
+    max_field = 0;
+    has_vals = false;
+  }
+
+  // Empty the matrix and release the buffers.
+  void Reset() {
+    *this = DMatrix();
+  }
+
+  // Reserve for a matrix of about this shape. The callers that know the exact
+  // size -- the binary cache, and the Python arrays -- avoid the repeated
+  // reallocation and copy that growing a multi-gigabyte column otherwise costs.
+  void Reserve(index_t rows, index_t nodes) {
+    offset.reserve(rows + 1);
+    Y.reserve(rows);
+    norm.reserve(rows);
+    keys.reserve(nodes * key_stride);
+  }
+
+  // Open a new row. Rows are built in order, one at a time.
   void AddRow() {
-    this->Y.push_back(0);
-    this->norm.push_back(1.0);
-    this->row.push_back(new SparseRow);
+    Y.push_back(0);
+    // 1.0 by default, which means no instance-wise normalization
+    norm.push_back(1.0);
+    offset.push_back(NodeCount());
     row_length++;
   }
 
-  // Add node to current data matrix.
+  // Add a node to the row AddRow() last opened.
   // We don't use the 'field' by default because it
   // will only be used in the ffm tasks.
-  void AddNode(index_t row_id,  
+  void AddNode(index_t row_id,
                index_t feat_id,
-               real_t feat_val, 
+               real_t feat_val,
                index_t field_id = 0) {
-    CHECK_GT(row_length, row_id);
-    // Allocate memory for the first adding
-    if (row[row_id] == nullptr) {
-      row[row_id] = new SparseRow;
+    CHECK_EQ(row_id, row_length - 1);
+    // A column materializes the moment an entry disagrees with the value its
+    // absence stands for. Backfilling costs one pass over what has been read
+    // so far, at most once per matrix, and on one-hot data never.
+    //
+    // Tracked by a flag rather than by the column being non-empty, because the
+    // very first node of a matrix materializes a column when there is nothing
+    // yet to backfill -- which would leave it empty and materialized at once.
+    if (!has_vals && feat_val != 1.0f) {
+      has_vals = true;
+      vals.assign(NodeCount(), 1.0f);
     }
-    Node node(field_id, feat_id, feat_val);
-    row[row_id]->push_back(node);
+    if (key_stride == 1 && field_id != 0) {
+      // Widen the key array in place: every feature id so far gains a zero
+      // field beside it.
+      std::vector<index_t> widened;
+      widened.reserve((keys.size() + 1) * 2);
+      for (size_t i = 0; i < keys.size(); ++i) {
+        widened.push_back(keys[i]);
+        widened.push_back(0);
+      }
+      keys.swap(widened);
+      key_stride = 2;
+    }
+    keys.push_back(feat_id);
+    if (key_stride == 2) { keys.push_back(field_id); }
+    if (has_vals) { vals.push_back(feat_val); }
+    offset.back() = NodeCount();
+    if (feat_id > max_feat) { max_feat = feat_id; }
+    if (field_id > max_field) { max_field = field_id; }
   }
 
   // The hash value is used to identify the difference
@@ -227,114 +349,38 @@ struct DMatrix {
   }
 
   // Copy another data matrix to this matrix.
-  // Note that here we do the deep copy and we will
-  // allocate memory if current matrix is empty.
   void CopyFrom(const DMatrix* matrix) {
     CHECK_NOTNULL(matrix);
-    this->Reset();
-    // Copy hash value
-    this->hash_value_1 = matrix->hash_value_1;
-    this->hash_value_2 = matrix->hash_value_2;
-    // Copy row length
-    this->row_length = matrix->row_length;
-    this->row.resize(row_length, nullptr);
-    // Copy row
-    for (index_t i = 0; i < row_length; ++i) {
-      SparseRow* rowc = matrix->row[i];
-      for (SparseRow::iterator iter = rowc->begin();
-           iter != rowc->end(); ++iter) {
-        this->AddNode(i, 
-                iter->feat_id, 
-                iter->feat_val, 
-                iter->field_id);
-      }
-    }
-    // Copy y
-    this->Y = matrix->Y;
-    // Copy norm
-    this->norm = matrix->norm;
-    // Copy has label
-    this->has_label = matrix->has_label;
-    // Copy pos
-    this->pos = matrix->pos;
+    *this = *matrix;
   }
 
-  // Compress current sparse matrix to a dense matrix.
-  // This method will be used in distributed computation.
-  // For example, the sparse matrix is:
-  //  ------------------------------------------
-  //  |    1:0.1    5:0.1    8:0.1   10:0.1    |
-  //  |    3:0.1    12:0.1   20:0.1            |
-  //  |    5:0.1    8:0.1    11:0.1            |
-  //  |    2:0.1    4:0.1    7:0.1             |
-  //  ------------------------------------------
-  // After compress, we can get a dense matrix like this:
-  //  ------------------------------------------
-  //  |    1:0.1    5:0.1    7:0.1    8:0.1    |
-  //  |    3:0.1    10:0.1   11:0.1            |
-  //  |    5:0.1    7:0.1    9:0.1             |
-  //  |    2:0.1    4:0.1    6:0.1             |
-  //  ------------------------------------------
-  // Also, we can get a vector to store the mapping relations:
-  //  -------------------------------------------------
-  //  | 1 | 2 | 3 | 4 | 5 | 7 | 8 | 10 | 11 | 12 | 20 |
-  //  -------------------------------------------------
-  void Compress(std::vector<index_t>& feature_list) {
-    // Using a map to store the mapping relations
-    size_t node_num {0};
-    for (auto row : this->row) {
-      node_num += row->size();
+  // Reads the header a binary cache opens with, returning false unless it is
+  // one of ours at a version we still understand. Shared with hash_binary() in
+  // the reader, so that the two cannot disagree about where the header ends.
+  static bool ReadHeader(FILE* file, uint64* hash_1, uint64* hash_2) {
+    uint64 magic = 0;
+    uint32 version = 0;
+    *hash_1 = 0;
+    *hash_2 = 0;
+    if (ReadDataFromDisk(file, (char*)&magic, sizeof(magic)) != sizeof(magic) ||
+        magic != kDMatrixMagic) {
+      return false;
     }
-    std::unordered_set<index_t> feat_set;
-    feat_set.reserve(node_num);
-    for (index_t i = 0; i < this->row_length; ++i) {
-      SparseRow* row = this->row[i];
-      for (SparseRow::iterator iter = row->begin();
-           iter != row->end(); ++iter) {
-        if (feat_set.count(iter->feat_id) == 0) {
-          feat_set.insert(iter->feat_id);
-        }
-      }
+    if (ReadDataFromDisk(file, (char*)&version, sizeof(version))
+            != sizeof(version) ||
+        version != kDMatrixVersion) {
+      return false;
     }
-    feature_list.reserve(feat_set.size());
-    std::copy(feat_set.begin(), feat_set.end(), 
-              std::back_inserter(feature_list));
-    std::sort(begin(feature_list), end(feature_list));
-    feature_map mp;
-    mp.reserve(feature_list.size());
-    for (index_t i = 0; i < feature_list.size(); ++ i) {
-      mp[feature_list[i]] = i + 1;
-    }
-    for (index_t i = 0; i < this->row_length; ++ i) {
-      for (auto &iter: *this->row[i]) {
-        // using map is better than lower_bound
-        iter.feat_id = mp[iter.feat_id];
-      }
-    }
-  }
-
-  // Get a mini-batch of data from current data matrix.
-  // This method will be used for distributed computation. 
-  // Return the count of sample for each function call.
-  index_t GetMiniBatch(index_t batch_size, DMatrix& mini_batch) {
-    // Copy mini-batch
-    for (index_t i = 0; i < batch_size; ++i) {
-      if (this->pos >= this->row_length) {
-        return i;
-      }
-      mini_batch.AddRow();
-      mini_batch.row[i] = this->row[pos];
-      mini_batch.Y[i] = this->Y[pos];
-      mini_batch.norm[i] = this->norm[pos];
-      this->pos++;
-    }
-    return batch_size;
+    return ReadDataFromDisk(file, (char*)hash_1, sizeof(*hash_1))
+               == sizeof(*hash_1) &&
+           ReadDataFromDisk(file, (char*)hash_2, sizeof(*hash_2))
+               == sizeof(*hash_2);
   }
 
   // Serialize current DMatrix to disk file.
   void Serialize(const std::string& filename) {
     CHECK_NE(filename.empty(), true);
-    CHECK_EQ(row_length, row.size());
+    CHECK_EQ(row_length + 1, offset.size());
     CHECK_EQ(row_length, Y.size());
     CHECK_EQ(row_length, norm.size());
 #ifndef _MSC_VER
@@ -342,23 +388,22 @@ struct DMatrix {
 #else
     FILE* file = OpenFileOrDie(filename.c_str(), "wb");
 #endif
-    // Write hash_value
+    WriteDataToDisk(file, (char*)&kDMatrixMagic, sizeof(kDMatrixMagic));
+    WriteDataToDisk(file, (char*)&kDMatrixVersion, sizeof(kDMatrixVersion));
     WriteDataToDisk(file, (char*)&hash_value_1, sizeof(hash_value_1));
     WriteDataToDisk(file, (char*)&hash_value_2, sizeof(hash_value_2));
-    // Write row_length
     WriteDataToDisk(file, (char*)&row_length, sizeof(row_length));
-    // Write row
-    for (size_t i = 0; i < row_length; ++i) {
-      WriteVectorToFile(file, *(row[i]));
-    }
-    // Write Y
-    WriteVectorToFile(file, Y);
-    // Write norm
-    WriteVectorToFile(file, norm);
-    // Write has_label
+    WriteDataToDisk(file, (char*)&max_feat, sizeof(max_feat));
+    WriteDataToDisk(file, (char*)&max_field, sizeof(max_field));
     WriteDataToDisk(file, (char*)&has_label, sizeof(has_label));
-    // Write pos
-    WriteDataToDisk(file, (char*)&pos, sizeof(pos));
+    // An elided column writes as a zero-length vector and reads back empty,
+    // so the elision round-trips without a flags word.
+    WriteDataToDisk(file, (char*)&key_stride, sizeof(key_stride));
+    WriteVectorToFile(file, offset);
+    WriteVectorToFile(file, keys);
+    WriteVectorToFile(file, vals);
+    WriteVectorToFile(file, Y);
+    WriteVectorToFile(file, norm);
     Close(file);
   }
 
@@ -371,71 +416,69 @@ struct DMatrix {
 #else
     FILE* file = OpenFileOrDie(filename.c_str(), "rb");
 #endif
-    // Read hash_value
-    ReadDataFromDisk(file, (char*)&hash_value_1, sizeof(hash_value_1));
-    ReadDataFromDisk(file, (char*)&hash_value_2, sizeof(hash_value_2));
-    // Read row_length
+    CHECK(ReadHeader(file, &hash_value_1, &hash_value_2));
     ReadDataFromDisk(file, (char*)&row_length, sizeof(row_length));
-    CHECK_GE(row_length, 0);
-    // Read row
-    row.resize(row_length, nullptr);
-    for (size_t i = 0; i < row_length; ++i) {
-      row[i] = new SparseRow;
-      ReadVectorFromFile(file, *(row[i]));
-    }
-    // Read Y
-    ReadVectorFromFile(file, Y);
-    // Read norm
-    ReadVectorFromFile(file, norm);
-    // Read has label
+    ReadDataFromDisk(file, (char*)&max_feat, sizeof(max_feat));
+    ReadDataFromDisk(file, (char*)&max_field, sizeof(max_field));
     ReadDataFromDisk(file, (char*)&has_label, sizeof(has_label));
-    // Read pos
-    ReadDataFromDisk(file, (char*)&pos, sizeof(pos));
+    ReadDataFromDisk(file, (char*)&key_stride, sizeof(key_stride));
+    ReadVectorFromFile(file, offset);
+    ReadVectorFromFile(file, keys);
+    ReadVectorFromFile(file, vals);
+    ReadVectorFromFile(file, Y);
+    ReadVectorFromFile(file, norm);
     Close(file);
+    // What a truncated or foreign file is actually caught by: the header only
+    // says the layout was ours, not that the body survived.
+    CHECK_EQ(row_length + 1, offset.size());
+    CHECK_EQ(offset.front(), 0);
+    CHECK(key_stride == 1 || key_stride == 2);
+    CHECK_EQ(offset.back() * key_stride, keys.size());
+    CHECK(vals.empty() || vals.size() == offset.back());
+    CHECK_EQ(row_length, Y.size());
+    CHECK_EQ(row_length, norm.size());
+    has_vals = !vals.empty();
   }
 
-  // We get find the max index of feature or field in current
-  // data matrix. This is used for initialize our model parameter.  
-  inline index_t MaxFeat() const { return max_feat_or_field(true); }
-  inline index_t MaxField() const { return max_feat_or_field(false); }
-  inline index_t max_feat_or_field(bool is_feat) const {
-    index_t max = 0;
-    for (size_t i = 0; i < row_length; ++i) {
-      SparseRow* sr = this->row[i];
-      for (SparseRow::const_iterator iter = sr->begin();
-           iter != sr->end(); ++iter) {
-        if (is_feat) {  // feature
-          if (iter->feat_id > max) {
-            max = iter->feat_id;
-          }
-        } else {  // field
-          if (iter->field_id > max) {
-            max = iter->field_id;
-          }
-        }
-      }
-    }
-    return max;
-  }
+  // The max index of feature or field in current data matrix, used to size the
+  // model parameters. Kept as the columns grow, because the alternative is a
+  // full pass over the arena once per sampled batch.
+  inline index_t MaxFeat() const { return max_feat; }
+  inline index_t MaxField() const { return max_field; }
 
   /* The DMatrix has a hash value that is generated
   from the TXT file. These two values are used to check 
   whether we can use binary file to speedup data reading */
-  uint64 hash_value_1;
-  uint64 hash_value_2;
+  uint64 hash_value_1 = 0;
+  uint64 hash_value_2 = 0;
   /* Row length of current matrix */
-  index_t row_length;
-  /* Store many SparseRow. Using pointer for zero-copy */
-  std::vector<SparseRow*> row;
+  index_t row_length = 0;
+  /* Row i owns the columns over [offset[i], offset[i+1]). Always row_length+1
+  long, so a row's length is one subtraction and the last entry is the node
+  count. */
+  std::vector<index_t> offset{0};
+  /* Feature ids, each followed by its field id when key_stride is 2. One
+  array rather than two because nothing reads a field without its feature. */
+  std::vector<index_t> keys;
+  /* Empty when every value is 1.0, and empty means exactly that */
+  std::vector<real_t> vals;
   /* (0 or -1) for negative and (+1) for positive
   examples, and others value for regression */
   std::vector<real_t> Y;
   /* Used for instance-wise normalization */
   std::vector<real_t> norm;
   /* If current dataset has label y */
-  bool has_label;
-  /* Current position for GetMiniBatch() */
-  index_t pos;
+  bool has_label = true;
+  index_t max_feat = 0;
+  index_t max_field = 0;
+  /* Whether the optional columns are being stored. Only meaningful while a
+  matrix is being built; a loaded one infers it from what the file carried. */
+  bool has_vals = false;
+  /* 2 once any node carried a nonzero field, 1 until then */
+  index_t key_stride = 1;
+
+  // Nodes added so far, which is what offset counts.
+  inline index_t NodeCount() const { return keys.size() / key_stride; }
 };
 
 }  // namespace xLearn

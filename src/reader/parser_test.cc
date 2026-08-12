@@ -61,19 +61,18 @@ void check(const DMatrix& matrix, bool has_label, bool has_field) {
       EXPECT_EQ(matrix.Y[i], -2);
     }
     EXPECT_FLOAT_EQ(matrix.norm[i], 13.888889);
-    int col_len = matrix.row[i]->size();
+    RowRef row = matrix.Row(i);
+    int col_len = row.len;
     EXPECT_EQ(col_len, 5);
-    SparseRow *row = matrix.row[i];
     int n = 0;
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
+    for (index_t j = 0; j < row.len; ++j) {
       if (has_field) {
-        EXPECT_EQ(iter->field_id, n);
+        EXPECT_EQ(row.field(j), n);
       } else {
-        EXPECT_EQ(iter->field_id, 0);
+        EXPECT_EQ(row.field(j), 0);
       }
-      EXPECT_EQ(iter->feat_id, n);
-      EXPECT_FLOAT_EQ(iter->feat_val, 0.12);
+      EXPECT_EQ(row.feat(j), n);
+      EXPECT_FLOAT_EQ(row.val(j), 0.12);
       n++;
     }
     EXPECT_EQ(n, 5);
@@ -91,19 +90,18 @@ void check_double(const DMatrix& matrix, bool has_label, bool has_field) {
       EXPECT_EQ(matrix.Y[i], -2);
     }
     EXPECT_FLOAT_EQ(matrix.norm[i], 13.888889);
-    int col_len = matrix.row[i]->size();
+    RowRef row = matrix.Row(i);
+    int col_len = row.len;
     EXPECT_EQ(col_len, 5);
-    SparseRow *row = matrix.row[i];
     int n = 0;
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
+    for (index_t j = 0; j < row.len; ++j) {
       if (has_field) {
-        EXPECT_EQ(iter->field_id, n);
+        EXPECT_EQ(row.field(j), n);
       } else {
-        EXPECT_EQ(iter->field_id, 0);
+        EXPECT_EQ(row.field(j), 0);
       }
-      EXPECT_EQ(iter->feat_id, n);
-      EXPECT_FLOAT_EQ(iter->feat_val, 0.12);
+      EXPECT_EQ(row.feat(j), n);
+      EXPECT_FLOAT_EQ(row.val(j), 0.12);
       n++;
     }
     EXPECT_EQ(n, 5);

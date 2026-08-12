@@ -41,12 +41,11 @@ TEST(FFMScore_Test, calc_score) {
     param.num_feature = 3;
     param.num_K = k;
     param.num_field = 3;
-    // Init SparseRow
-    SparseRow row(param.num_feature);
-    for (index_t i = 0; i < param.num_feature; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
-      row[i].field_id = i;
+    // Init the row
+    RowBuffer buf;
+    const index_t kRowLen = param.num_feature;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0, i);
     }
     // Init model
     Model model;
@@ -62,21 +61,21 @@ TEST(FFMScore_Test, calc_score) {
     }
     real_t* v = model.GetParameter_v();
     index_t k_aligned = model.get_aligned_k();
+    index_t aux_size = model.GetAuxiliarySize();
     for (index_t j = 0; j < model.GetNumFeature(); ++j) {
       for (index_t f = 0; f < model.GetNumField(); ++f) {
-        for (index_t d = 0; d < k_aligned; ) {
-          for (index_t s = 0; s < kAlign; s++, v++, d++) {
-            v[0] = (d < model.GetNumK()) ? 1.0 : 0.0;
-            v[kAlign] = 1.0;
-          }
-          v += kAlign;
+        for (index_t d = 0; d < k_aligned; d++, v++) {
+          *v = (d < model.GetNumK()) ? 1.0 : 0.0;
+        }
+        for (index_t d = k_aligned; d < aux_size*k_aligned; d++, v++) {
+          *v = 1.0;
         }
       }
     }
     model.GetParameter_b()[0] = 0.0;
     FFMScore score;
     for (size_t i = 0; i < 10; ++i) {
-      real_t val = score.CalcScore(&row, model);
+      real_t val = score.CalcScore(buf, model);
       // 6 + 24*4*3 = 294
       EXPECT_FLOAT_EQ(val, 6+k*4*3);
     }
@@ -94,12 +93,11 @@ TEST(FFMScore_Test, calc_score_overflow) {
     param.num_feature = 3;
     param.num_K = k;
     param.num_field = 3;
-    // Init SparseRow
-    SparseRow row(param.num_feature*2);
-    for (index_t i = 0; i < param.num_feature*2; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
-      row[i].field_id = i;
+    // Init the row
+    RowBuffer buf;
+    const index_t kRowLen = param.num_feature*2;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0, i);
     }
     // Init model
     Model model;
@@ -115,21 +113,21 @@ TEST(FFMScore_Test, calc_score_overflow) {
     }
     real_t* v = model.GetParameter_v();
     index_t k_aligned = model.get_aligned_k();
+    index_t aux_size = model.GetAuxiliarySize();
     for (index_t j = 0; j < model.GetNumFeature(); ++j) {
       for (index_t f = 0; f < model.GetNumField(); ++f) {
-        for (index_t d = 0; d < k_aligned; ) {
-          for (index_t s = 0; s < kAlign; s++, v++, d++) {
-            v[0] = (d < model.GetNumK()) ? 1.0 : 0.0;
-            v[kAlign] = 1.0;
-          }
-          v += kAlign;
+        for (index_t d = 0; d < k_aligned; d++, v++) {
+          *v = (d < model.GetNumK()) ? 1.0 : 0.0;
+        }
+        for (index_t d = k_aligned; d < aux_size*k_aligned; d++, v++) {
+          *v = 1.0;
         }
       }
     }
     model.GetParameter_b()[0] = 0.0;
     FFMScore score;
     for (size_t i = 0; i < 10; ++i) {
-      real_t val = score.CalcScore(&row, model);
+      real_t val = score.CalcScore(buf, model);
       EXPECT_FLOAT_EQ(val, 6+k*4*3);
     }
   }
@@ -143,17 +141,16 @@ TEST(FFMScore_Test, calc_grad_ftrl_inside_l1_band) {
   for (index_t k = 1; k < 40; ++k) {
     Model model;
     model.Initialize("ffm", "squared", 3, 3, k, 3);
-    SparseRow row(3);
-    for (index_t i = 0; i < 3; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
-      row[i].field_id = i;
+    RowBuffer buf;
+    const index_t kRowLen = 3;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0, i);
     }
     FFMScore score;
     std::string opt_type("ftrl");
     // An l1 no |z| can exceed, so every coordinate lands inside the band.
     score.Initialize(0.1, 0, 0.3, 1.0, 1e10, 0, opt_type);
-    score.CalcGrad(&row, model, 1.0);
+    score.CalcGrad(buf, model, 1.0);
     real_t* v = model.GetParameter_v();
     index_t k_aligned = model.get_aligned_k();
     index_t align0 = 3 * k_aligned;
@@ -162,10 +159,8 @@ TEST(FFMScore_Test, calc_grad_ftrl_inside_l1_band) {
       for (index_t f = 0; f < model.GetNumField(); ++f) {
         if (j == f) continue;
         real_t* base = v + j*align1 + f*align0;
-        for (index_t d = 0; d < align0; d += kAlign * 3) {
-          for (index_t s = 0; s < kAlign; ++s) {
-            EXPECT_FLOAT_EQ(base[d + s], 0.0);
-          }
+        for (index_t d = 0; d < model.GetNumK(); ++d) {
+          EXPECT_FLOAT_EQ(base[d], 0.0);
         }
       }
     }
@@ -176,17 +171,16 @@ TEST(FFMScore_Test, calc_grad_ftrl_outside_l1_band) {
   for (index_t k = 1; k < 40; ++k) {
     Model model;
     model.Initialize("ffm", "squared", 3, 3, k, 3);
-    SparseRow row(3);
-    for (index_t i = 0; i < 3; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
-      row[i].field_id = i;
+    RowBuffer buf;
+    const index_t kRowLen = 3;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0, i);
     }
     FFMScore score;
     std::string opt_type("ftrl");
     // No band at all, so every coordinate takes the computed value.
     score.Initialize(0.1, 0, 0.3, 1.0, 0, 0, opt_type);
-    score.CalcGrad(&row, model, 1.0);
+    score.CalcGrad(buf, model, 1.0);
     real_t* v = model.GetParameter_v();
     index_t k_aligned = model.get_aligned_k();
     index_t align0 = 3 * k_aligned;
@@ -195,11 +189,12 @@ TEST(FFMScore_Test, calc_grad_ftrl_outside_l1_band) {
       for (index_t f = 0; f < model.GetNumField(); ++f) {
         if (j == f) continue;
         real_t* base = v + j*align1 + f*align0;
-        for (index_t d = 0; d < align0; d += kAlign * 3) {
-          for (index_t s = 0; s < kAlign; ++s) {
-            EXPECT_TRUE(std::isfinite(base[d + s]));
-            EXPECT_NE(base[d + s], 0.0);
-          }
+        // Only the K coordinates the model actually carries: the padding up to
+        // k_aligned starts at zero on both sides of a pair, so its gradient is
+        // zero and it is meant to stay there.
+        for (index_t d = 0; d < model.GetNumK(); ++d) {
+          EXPECT_TRUE(std::isfinite(base[d]));
+          EXPECT_NE(base[d], 0.0);
         }
       }
     }

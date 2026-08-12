@@ -72,10 +72,9 @@ TEST(MODEL_TEST, Init_ffm) {
 
   }
   len = model_ffm.GetNumParameter_v();
-  for (index_t i = 0; i < len; i+=(kAlign*aux_size)) {
-    for (index_t j = 1; j < aux_size; ++j) {
-      EXPECT_FLOAT_EQ(v[i+kAlign*j], 1.0);
-    }
+  index_t k_aligned = model_ffm.get_aligned_k();
+  for (index_t i = k_aligned; i < len; i+=(aux_size*k_aligned)) {
+    EXPECT_FLOAT_EQ(v[i], 1.0);
   }
 }
 

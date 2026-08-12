@@ -149,13 +149,12 @@ void CheckLR(const DMatrix* matrix, bool has_label, bool disk) {
   }
   EXPECT_FLOAT_EQ(matrix->norm[0], 22.03274);
   for (int i = 0; i < matrix->row_length; ++i) {
-    SparseRow *row = matrix->row[i];
+    RowRef row = matrix->Row(i);
     int n = 0;
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
-      EXPECT_EQ(iter->field_id, 0);
-      EXPECT_EQ(iter->feat_id, 1);
-      EXPECT_FLOAT_EQ(iter->feat_val, 0.123);
+    for (index_t j = 0; j < row.len; ++j) {
+      EXPECT_EQ(row.field(j), 0);
+      EXPECT_EQ(row.feat(j), 1);
+      EXPECT_FLOAT_EQ(row.val(j), 0.123);
       n++;
     }
     EXPECT_EQ(n, 3);
@@ -176,13 +175,12 @@ void CheckFFM(const DMatrix* matrix, bool has_label, bool disk) {
   }
   EXPECT_FLOAT_EQ(matrix->norm[0], 22.03274);
   for (int i = 0; i < matrix->row_length; ++i) {
-    SparseRow *row = matrix->row[i];
+    RowRef row = matrix->Row(i);
     int n = 0;
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
-      EXPECT_EQ(iter->field_id, 1);
-      EXPECT_EQ(iter->feat_id, 1);
-      EXPECT_FLOAT_EQ(iter->feat_val, 0.123);
+    for (index_t j = 0; j < row.len; ++j) {
+      EXPECT_EQ(row.field(j), 1);
+      EXPECT_EQ(row.feat(j), 1);
+      EXPECT_FLOAT_EQ(row.val(j), 0.123);
       n++;
     }
     EXPECT_EQ(n, 3);
@@ -198,12 +196,11 @@ void CheckCSV(const DMatrix* matrix, bool disk) {
   EXPECT_EQ(matrix->Y[0], 0);
   EXPECT_FLOAT_EQ(matrix->norm[0], 22.03274);
   for (int i = 0; i < matrix->row_length; ++i) {
-    SparseRow *row = matrix->row[i];
+    RowRef row = matrix->Row(i);
     int n = 0;
-    for (SparseRow::iterator iter = row->begin();
-         iter != row->end(); ++iter) {
-      EXPECT_EQ(iter->feat_id, n);
-      EXPECT_FLOAT_EQ(iter->feat_val, 0.123);
+    for (index_t j = 0; j < row.len; ++j) {
+      EXPECT_EQ(row.feat(j), n);
+      EXPECT_FLOAT_EQ(row.val(j), 0.123);
       n++;
     }
     EXPECT_EQ(n, 3);

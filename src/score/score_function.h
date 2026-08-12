@@ -22,6 +22,7 @@ FM score, FFM score, and etc.
 #ifndef XLEARN_LOSS_SCORE_FUNCTION_H_
 #define XLEARN_LOSS_SCORE_FUNCTION_H_
 
+#include <cmath>
 #include <vector>
 
 #include "src/base/common.h"
@@ -88,18 +89,99 @@ class Score {
 
   // Given one example and current model, this method
   // returns the score
-  virtual real_t CalcScore(const SparseRow* row,
+  virtual real_t CalcScore(RowRef row,
                            Model& model,
                            real_t norm = 1.0) = 0;
 
   // Calculate gradient and update current
   // model parameters
-  virtual void CalcGrad(const SparseRow* row,
+  virtual void CalcGrad(RowRef row,
                         Model& model,
                         real_t pg,
                         real_t norm = 1.0) = 0;
 
+  // Turns a prediction into the partial gradient to apply, and reports the
+  // loss it came from. A function pointer and a context rather than a
+  // std::function: this runs once per example and must not allocate.
+  typedef real_t (*PartialGrad)(real_t pred, void* context, real_t* loss);
+
+  // Whether Step() saves this score function real work.
+  //
+  // Asked once per batch, not once per row, because the answer decides which
+  // loop a Loss runs. FM says yes: its latent sum is the same in both halves,
+  // over parameters the linear update cannot have touched, so the split path
+  // builds it twice. Linear and FFM say no, and it is not a wash for them --
+  // routing a score function with nothing to share through Step() puts an
+  // indirect call it cannot inline around a body that does very little, which
+  // measured 17% on LR before this existed.
+  virtual bool PrefersFusedStep() const { return false; }
+
+  // Start fetching the parameter blocks a row will read, without waiting.
+  //
+  // A second, shorter stage of the pipeline the row prefetch begins: which
+  // parameters a row touches is only known once its feature ids have arrived,
+  // so this is issued for a row whose columns are already in cache. A hint
+  // only -- the epoch trains bit-identically with it removed.
+  virtual void PrefetchParams(RowRef row, Model& model) { }
+
+  // Score one example and apply the resulting gradient, returning the loss.
+  // Only called when PrefersFusedStep() is true.
+  virtual real_t Step(RowRef row,
+                      Model& model,
+                      real_t norm,
+                      PartialGrad partial_grad,
+                      void* context) {
+    real_t loss = 0;
+    real_t pg = partial_grad(this->CalcScore(row, model, norm),
+                             context, &loss);
+    this->CalcGrad(row, model, pg, norm);
+    return loss;
+  }
+
  protected:
+  // One ftrl-proximal step over the three slots at p -- the weight, the sum
+  // of squared gradients, and the dual accumulator -- read into registers and
+  // written back once.
+  //
+  // Taken as references into the parameter array instead, the three alias one
+  // another as far as the compiler can prove, so the store to z forces a
+  // reload and a second square root of a sum the line above already has.
+  void ftrl_update(real_t* p, real_t g) {
+    real_t weight = p[0];
+    real_t sqrt_old_n = std::sqrt(p[1]);
+    real_t n = p[1] + g * g;
+    real_t sqrt_n = std::sqrt(n);
+    real_t sigma = (sqrt_n - sqrt_old_n) * inv_alpha_;
+    real_t z = p[2] + (g - sigma * weight);
+    // Both arms, then a select. Which way z falls is a coin toss the branch
+    // predictor cannot learn, and the mispredict costs more than the divide
+    // it was there to skip.
+    real_t sign = std::copysign(1.0f, z);
+    real_t weight_next = (sign * lambda_1_ - z) /
+                         ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
+    p[0] = std::fabs(z) <= lambda_1_ ? 0.0f : weight_next;
+    p[1] = n;
+    p[2] = z;
+  }
+
+  // The ftrl update of the linear weights and the bias, shared by all three
+  // score functions: the rule is the same wherever a feature has one weight,
+  // and only the latent term below it differs.
+  void ftrl_linear_grad(RowRef row, Model& model, real_t pg, real_t norm) {
+    real_t sqrt_norm = std::sqrt(norm);
+    real_t* w = model.GetParameter_w();
+    index_t num_feat = model.GetNumFeature();
+    for (index_t n = 0; n < row.len; ++n) {
+      index_t feat_id = row.feat(n);
+      // To avoid unseen feature
+      if (feat_id >= num_feat) continue;
+      real_t* p = w + feat_id * 3;
+      this->ftrl_update(p, lambda_2_ * p[0] + pg * row.val(n) * sqrt_norm);
+    }
+    // bias
+    this->ftrl_update(model.GetParameter_b(), pg);
+  }
+
   real_t learning_rate_;
   real_t regu_lambda_;
   real_t alpha_;

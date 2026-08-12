@@ -20,10 +20,51 @@ This file is the implementation of CrossEntropyLoss class.
 
 #include "src/loss/cross_entropy_loss.h"
 
+#include <cmath>
 #include <thread>
 #include<atomic>
 
 namespace xLearn {
+
+namespace {
+
+// log(1 + exp(-y*pred)) and its partial gradient, both functions of the one
+// exp() computed here.
+//
+// The exponent is taken on the side that cannot overflow: written directly as
+// log1p(exp(-y*pred)), a confidently wrong prediction overflows exp() to
+// infinity and the epoch's accumulated loss never recovers. Sharing the one
+// exp() between the two results is the other half of the reason this is a
+// function -- as separate expressions the second call cannot be folded away,
+// because exp() sets errno.
+inline real_t ce_loss_and_grad(real_t y, real_t pred, real_t* pg) {
+  real_t t = y * pred;
+  real_t u = std::exp(-std::fabs(t));
+  // sigmoid(-|t|), which is the factor the gradient wants where the
+  // prediction agrees with the label; its complement is what the other side
+  // wants.
+  real_t s = u / (1 + u);
+  *pg = -y * (t >= 0 ? s : 1 - s);
+  return std::log1p(u) + std::max(-t, real_t(0));
+}
+
+// The loss on its own, for the evaluation pass. The gradient is dead once
+// this is inlined, so asking for it costs nothing and keeps one copy of the
+// formula above.
+inline real_t ce_loss(real_t y, real_t pred) {
+  real_t pg;
+  return ce_loss_and_grad(y, pred, &pg);
+}
+
+// Score::Step() hands the prediction back here to be turned into the gradient
+// it should apply. The context is the label, which is all this needs.
+real_t ce_partial_grad(real_t pred, void* context, real_t* loss) {
+  real_t pg = 0;
+  *loss = ce_loss_and_grad(*static_cast<const real_t*>(context), pred, &pg);
+  return pg;
+}
+
+} // namespace
 
 // Calculate loss in one thread.
 static void ce_evaluate_thread(const std::vector<real_t>* pred,
@@ -35,7 +76,7 @@ static void ce_evaluate_thread(const std::vector<real_t>* pred,
   *tmp_sum = 0;
   for (size_t i = start_idx; i < end_idx; ++i) {
     real_t y = (*label)[i] > 0 ? 1.0 : -1.0;
-    (*tmp_sum) += log1p(exp(-y*(*pred)[i]));
+    (*tmp_sum) += ce_loss(y, (*pred)[i]);
   }
 }
 
@@ -83,20 +124,37 @@ static void ce_gradient_thread(const DMatrix* matrix,
                                Model* model,
                                Score* score_func,
                                bool is_norm,
+                               const std::vector<RowMeta>* rows,
                                real_t* sum,
                                size_t start_idx,
                                size_t end_idx) {
   CHECK_GE(end_idx, start_idx);
   *sum = 0;
+  bool prefetch_params = WantsParamPrefetch(*model);
+  // Which loop, decided once for the whole batch. Step() lets a score
+  // function keep what scoring and the gradient share, but it reaches the
+  // loss through a pointer it cannot inline -- worth it only where there is
+  // something to share.
+  if (score_func->PrefersFusedStep()) {
+    for (size_t i = start_idx; i < end_idx; ++i) {
+      RowMeta m = NextRow(matrix, rows, score_func, model, prefetch_params,
+                            i, end_idx);
+      real_t norm = is_norm ? m.norm : 1.0;
+      real_t y = m.y > 0 ? 1.0 : -1.0;
+      *sum += score_func->Step(matrix->Row(m), *model, norm,
+                               ce_partial_grad, &y);
+    }
+    return;
+  }
   for (size_t i = start_idx; i < end_idx; ++i) {
-    SparseRow* row = matrix->row[i];
-    real_t norm = is_norm ? matrix->norm[i] : 1.0;
+    RowMeta m = NextRow(matrix, rows, score_func, model, prefetch_params,
+                            i, end_idx);
+    RowRef row = matrix->Row(m);
+    real_t norm = is_norm ? m.norm : 1.0;
     real_t pred = score_func->CalcScore(row, *model, norm);
-    // partial gradient
-    real_t y = matrix->Y[i] > 0 ? 1.0 : -1.0;
-    *sum += log1p(exp(-y*pred));
-    real_t pg = -y/(1.0+(1.0/exp(-y*pred)));
-    // real gradient and update
+    real_t y = m.y > 0 ? 1.0 : -1.0;
+    real_t pg;
+    *sum += ce_loss_and_grad(y, pred, &pg);
     score_func->CalcGrad(row, *model, pg, norm);
   }
 }
@@ -115,7 +173,8 @@ static void ce_gradient_thread(const DMatrix* matrix,
 //                         master_thread
 //------------------------------------------------------------------------------
 void CrossEntropyLoss::CalcGrad(const DMatrix* matrix,
-                                Model& model) {
+                                Model& model,
+                                const std::vector<RowMeta>* rows) {
   CHECK_NOTNULL(matrix);
   CHECK_GT(matrix->row_length, 0);
   size_t row_len = matrix->row_length;
@@ -131,6 +190,7 @@ void CrossEntropyLoss::CalcGrad(const DMatrix* matrix,
                              &model,
                              score_func_,
                              norm_,
+                             rows,
                              &(sum[i]),
                              start_idx,
                              end_idx));

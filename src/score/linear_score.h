@@ -39,35 +39,38 @@ class LinearScore : public Score {
 
   // Given one example and current model, this method
   // returns the linear score wTx.
-  real_t CalcScore(const SparseRow* row,
+  real_t CalcScore(RowRef row,
                    Model& model,
                    real_t norm = 1.0);
 
   // Calculate gradient and update current
   // model parameters.
-  void CalcGrad(const SparseRow* row,
+  void CalcGrad(RowRef row,
                 Model& model,
                 real_t pg,
                 real_t norm = 1.0);
 
+  // Start fetching the linear weights this row will read.
+  void PrefetchParams(RowRef row, Model& model);
+
  protected:
   // Calculate gradient and update model using sgd
-  void calc_grad_sgd(const SparseRow* row,
+  void calc_grad_sgd(RowRef row,
                      Model& model,
                      real_t pg,
-                     real_t norm = 1.0);
+                     real_t norm);
 
   // Calculate gradient and update model using adagrad
-  void calc_grad_adagrad(const SparseRow* row,
+  void calc_grad_adagrad(RowRef row,
                          Model& model,
                          real_t pg,
-                         real_t norm = 1.0);
+                         real_t norm);
 
   // Calculate gradient and update model using ftrl
-  void calc_grad_ftrl(const SparseRow* row,
+  void calc_grad_ftrl(RowRef row,
                       Model& model,
                       real_t pg,
-                      real_t norm = 1.0);
+                      real_t norm);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(LinearScore);

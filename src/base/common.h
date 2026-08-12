@@ -28,6 +28,10 @@ make programming convenient.
 
 #include <limits>
 
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <xmmintrin.h>  // _mm_prefetch, which MSVC has no builtin for.
+#endif
+
 #include "src/base/logging.h"
 
 //------------------------------------------------------------------------------
@@ -191,5 +195,18 @@ static const float kFloatMin = std::numeric_limits<float>::min();
 /* To avoid dividing by zero */
 static const float kVerySmallNumber = 1e-15;
 static const double kVerySmallNumberDouble = 1e-15;
+
+// Start fetching the cache line at addr without waiting for it. A hint and
+// nothing more: every caller computes the same result with the call removed,
+// and a compiler that has no such builtin drops it.
+inline void Prefetch(const void* addr) {
+#if defined(__GNUC__) || defined(__clang__)
+  __builtin_prefetch(addr);
+#elif defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+  _mm_prefetch(static_cast<const char*>(addr), _MM_HINT_T0);
+#else
+  (void)addr;
+#endif
+}
 
 #endif  // XLEARN_BASE_COMMON_H_

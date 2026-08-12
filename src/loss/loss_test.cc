@@ -42,11 +42,8 @@ class TestLoss : public Loss {
                const std::vector<real_t>& label) { return; }
 
   void CalcGrad(const DMatrix* data_matrix,
-                Model& model) { return; }
-
-  void CalcGradDist(DMatrix* data_matrix,
-                    Model& model,
-                    std::vector<real_t>& grad) { return; }
+                Model& model,
+                const std::vector<RowMeta>* rows) { return; }
 
   std::string loss_type() { return "test"; }
 
@@ -87,10 +84,9 @@ TEST_F(LossTest, Predict_Linear) {
   }
   // Create Data matrix
   DMatrix matrix;
-  matrix.ReAlloc(kLine);
   for (int i = 0; i < kLine; ++i) {
+    matrix.AddRow();
     matrix.Y[i] = 0;
-    matrix.row[i] = new SparseRow;
     for (int j = 0; j < param.num_feature; ++j) {
       matrix.AddNode(i, j, 1.0);
     }
@@ -131,10 +127,9 @@ TEST_F(LossTest, Predict_FM) {
   }
   // Create Data matrix
   DMatrix matrix;
-  matrix.ReAlloc(kLine);
   for (int i = 0; i < kLine; ++i) {
+    matrix.AddRow();
     matrix.Y[i] = 0;
-    matrix.row[i] = new SparseRow;
     for (int j = 0; j < param.num_feature; ++j) {
       matrix.AddNode(i, j, 1.0);
     }
@@ -176,10 +171,9 @@ TEST_F(LossTest, Predict_FFM) {
   }
   // Create Data matrix
   DMatrix matrix;
-  matrix.ReAlloc(kLine);
   for (int i = 0; i < kLine; ++i) {
+    matrix.AddRow();
     matrix.Y[i] = 0;
-    matrix.row[i] = new SparseRow;
     for (int j = 0; j < param.num_feature; ++j) {
       matrix.AddNode(i, j, 1.0, j);
     }

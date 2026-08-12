@@ -23,6 +23,9 @@ This file defines the Metric class.
 
 #include <math.h>
 
+#include <algorithm>
+#include <cmath>
+
 #include "src/base/common.h"
 #include "src/base/math.h"
 #include "src/base/class_register.h"
@@ -471,16 +474,6 @@ class F1Metric : public Metric {
 //------------------------------------------------------------------------------
 class AUCMetric : public Metric {
  public:
-  struct Info {
-    Info() {
-      positive_vec_.resize(kMaxBucketSize, 0);
-      negative_vec_.resize(kMaxBucketSize, 0);
-    }
-    std::vector<index_t> positive_vec_;
-    std::vector<index_t> negative_vec_;
-  };
-
- public:
   // Constructor and Destructor
   AUCMetric() {
     all_positive_number_.clear();
@@ -490,54 +483,32 @@ class AUCMetric : public Metric {
   }
   ~AUCMetric() { }
 
-  // Calculate AUC in one thread
-  static void auc_accum_thread(const std::vector<real_t>* Y,
-                               const std::vector<real_t>* pred,
-                               Info* info,
-                               size_t start_idx,
-                               size_t end_idx) {
-    CHECK_GE(end_idx, start_idx);
-    for (size_t i = start_idx; i < end_idx; ++i) {
-      real_t r_label = (*Y)[i] > 0 ? 1 : -1;
-      real_t sigmoid_score = fastsigmoid((*pred)[i]);
-      index_t bkt_id = index_t(sigmoid_score * kMaxBucketSize) 
-                       % kMaxBucketSize;
-      CHECK_LT(bkt_id, kMaxBucketSize);
-      if (r_label > 0) {
-        info->positive_vec_[bkt_id] += 1;
+  // Accumulate counters during the training.
+  //
+  // Counted on the calling thread. The histogram is a million buckets wide,
+  // so giving each worker its own costs 8 MB of allocation and a
+  // million-bucket reduction per worker, to spread a few tens of thousands of
+  // increments -- the sharding was more work than the counting it parallelized.
+  void Accumulate(const std::vector<real_t>& Y,
+                  const std::vector<real_t>& pred) {
+    CHECK_EQ(Y.size(), pred.size());
+    for (size_t i = 0; i < pred.size(); ++i) {
+      // An exact sigmoid, not the approximate one: this bucketing is what
+      // orders the predictions, so an error here reorders neighbours outright
+      // rather than shifting a score slightly. A confident prediction
+      // saturates it to 1.0, which has to clamp to the top bucket -- wrapping
+      // would file the most confident positives under the lowest score.
+      real_t sigmoid_score = 1.0f / (1.0f + std::exp(-pred[i]));
+      index_t bkt_id = std::min(index_t(sigmoid_score * kMaxBucketSize),
+                                kMaxBucketSize - 1);
+      if (Y[i] > 0) {
+        all_positive_number_[bkt_id] += 1;
       } else {
-        info->negative_vec_[bkt_id] += 1;
+        all_negative_number_[bkt_id] += 1;
       }
     }
   }
 
-  // Accumulate counters during the training.
-  void Accumulate(const std::vector<real_t>& Y,
-                  const std::vector<real_t>& pred) {
-    CHECK_EQ(Y.size(), pred.size());
-    // multi-thread
-    Info single_info;
-    std::vector<Info> info(threadNumber_, single_info);
-    for (int i = 0; i < threadNumber_; ++i) {
-      size_t start_idx = getStart(pred.size(), threadNumber_, i);
-      size_t end_idx = getEnd(pred.size(), threadNumber_, i);
-      pool_->enqueue(std::bind(auc_accum_thread,
-                               &Y,
-                               &pred,
-                               &(info[i]),
-                               start_idx,
-                               end_idx));
-    }
-    // Wait all thread finish their job
-    pool_->Sync(threadNumber_);
-    for (index_t i = 0; i < info.size(); ++i) {
-      for (index_t j = 0; j < kMaxBucketSize; ++j) {
-        all_positive_number_[j] += info[i].positive_vec_[j];
-        all_negative_number_[j] += info[i].negative_vec_[j];
-      }
-    } 
-  }
-  
   // Reset counters
   void Reset() {
     all_positive_number_.clear();
@@ -566,25 +537,31 @@ class AUCMetric : public Metric {
   std::vector<index_t> all_positive_number_;
   std::vector<index_t> all_negative_number_;
 
-  real_t CalcAUC(std::vector<index_t> positive_vec,
-                 std::vector<index_t> negative_vec) {
+  // The histograms are a million buckets wide, so taking them by value copied
+  // eight megabytes per call -- and then read the members anyway, which is why
+  // nobody noticed.
+  real_t CalcAUC(const std::vector<index_t>& positive_vec,
+                 const std::vector<index_t>& negative_vec) {
     CHECK_EQ(positive_vec.size(), negative_vec.size());
     long long positive_sum = 0;
     long long negative_sum= 0;
     long long pre_positive_sum = 0.0;
-    long long positivesum_dot_negativesum = 0;
     double auc = 0.0;
-    double auc_res = 0.0;
     for (index_t i = 0; i < kMaxBucketSize; ++i) {
       pre_positive_sum = positive_sum;
-      positive_sum += all_positive_number_[i];
-      negative_sum += all_negative_number_[i];
-      auc += (pre_positive_sum + positive_sum) * 
-             (double)(all_negative_number_[i]) * 1.0 / 2;
+      positive_sum += positive_vec[i];
+      negative_sum += negative_vec[i];
+      auc += (pre_positive_sum + positive_sum) *
+             (double)(negative_vec[i]) * 1.0 / 2;
     }
-    positivesum_dot_negativesum = positive_sum * negative_sum;
-    auc_res = auc / (positivesum_dot_negativesum);
-    return 1.0 - auc_res;
+    // With one class absent there is no pair to rank, and the ratio below is
+    // 0/0. Report the value a coin flip would earn rather than a NaN, which
+    // compares false against everything and would tell early stopping that no
+    // epoch ever improved.
+    if (positive_sum == 0 || negative_sum == 0) {
+      return 0.5;
+    }
+    return 1.0 - auc / (double)(positive_sum * negative_sum);
   }
 
  private:

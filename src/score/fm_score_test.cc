@@ -41,11 +41,11 @@ TEST(FMScoreTest, calc_score) {
     param.num_feature = 3;
     param.num_K = k;
     param.num_field = 3;
-    // Init SparseRow
-    SparseRow row(param.num_feature);
-    for (index_t i = 0; i < param.num_feature; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
+    // Init the row
+    RowBuffer buf;
+    const index_t kRowLen = param.num_feature;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0);
     }
     // Init model
     Model model;
@@ -72,7 +72,7 @@ TEST(FMScoreTest, calc_score) {
     model.GetParameter_b()[0] = 0.0;
     FMScore score;
     for (size_t i = 0; i < 10; ++i) {
-      real_t val = score.CalcScore(&row, model);
+      real_t val = score.CalcScore(buf, model);
       EXPECT_FLOAT_EQ(val, 6+k*4*3);
     }
   }
@@ -89,11 +89,11 @@ TEST(FMScoreTest, calc_score_overflow) {
     param.num_feature = 3;
     param.num_K = k;
     param.num_field = 3;
-    // Init SparseRow
-    SparseRow row(param.num_feature*2);
-    for (index_t i = 0; i < param.num_feature*2; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
+    // Init the row
+    RowBuffer buf;
+    const index_t kRowLen = param.num_feature*2;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0);
     }
     // Init model
     Model model;
@@ -120,7 +120,7 @@ TEST(FMScoreTest, calc_score_overflow) {
     model.GetParameter_b()[0] = 0.0;
     FMScore score;
     for (size_t i = 0; i < 10; ++i) {
-      real_t val = score.CalcScore(&row, model);
+      real_t val = score.CalcScore(buf, model);
       EXPECT_FLOAT_EQ(val, 6+k*4*3);
     }
   }
@@ -133,16 +133,16 @@ TEST(FMScoreTest, calc_grad_ftrl_inside_l1_band) {
   for (index_t k = 1; k < 40; ++k) {
     Model model;
     model.Initialize("fm", "squared", 3, 3, k, 3);
-    SparseRow row(3);
-    for (index_t i = 0; i < 3; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
+    RowBuffer buf;
+    const index_t kRowLen = 3;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0);
     }
     FMScore score;
     std::string opt_type("ftrl");
     // An l1 no |z| can exceed, so every coordinate lands inside the band.
     score.Initialize(0.1, 0, 0.3, 1.0, 1e10, 0, opt_type);
-    score.CalcGrad(&row, model, 1.0);
+    score.CalcGrad(buf, model, 1.0);
     real_t* v = model.GetParameter_v();
     index_t k_aligned = model.get_aligned_k();
     for (index_t j = 0; j < model.GetNumFeature(); ++j) {
@@ -157,20 +157,23 @@ TEST(FMScoreTest, calc_grad_ftrl_outside_l1_band) {
   for (index_t k = 1; k < 40; ++k) {
     Model model;
     model.Initialize("fm", "squared", 3, 3, k, 3);
-    SparseRow row(3);
-    for (index_t i = 0; i < 3; ++i) {
-      row[i].feat_id = i;
-      row[i].feat_val = 2.0;
+    RowBuffer buf;
+    const index_t kRowLen = 3;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0);
     }
     FMScore score;
     std::string opt_type("ftrl");
     // No band at all, so every coordinate takes the computed value.
     score.Initialize(0.1, 0, 0.3, 1.0, 0, 0, opt_type);
-    score.CalcGrad(&row, model, 1.0);
+    score.CalcGrad(buf, model, 1.0);
     real_t* v = model.GetParameter_v();
     index_t k_aligned = model.get_aligned_k();
     for (index_t j = 0; j < model.GetNumFeature(); ++j) {
-      for (index_t d = 0; d < k_aligned; ++d) {
+      // Only the K coordinates the model actually carries: the padding up to
+      // k_aligned starts at zero, contributes nothing to the latent sum, and so
+      // has a zero gradient -- it is meant to stay there.
+      for (index_t d = 0; d < model.GetNumK(); ++d) {
         EXPECT_TRUE(std::isfinite(v[j*k_aligned*3 + d]));
         EXPECT_NE(v[j*k_aligned*3 + d], 0.0);
       }

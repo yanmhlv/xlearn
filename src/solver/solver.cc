@@ -351,7 +351,8 @@ void Solver::init_train() {
                      hyper_param_.num_field,
                      hyper_param_.num_K,
                      hyper_param_.auxiliary_size,
-                     hyper_param_.model_scale);
+                     hyper_param_.model_scale,
+                     hyper_param_.seed);
   } else { // Initialize parameter from pre-trained model
     model_ = new Model(hyper_param_.pre_model_file);
   }
