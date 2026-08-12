@@ -235,6 +235,19 @@ struct DMatrix {
     return m;
   }
 
+  // Start fetching the columns of the row a RowMeta names, without waiting.
+  //
+  // A shuffled epoch reads its metadata in order and its columns at random,
+  // so this is the fetch that has nowhere to hide: issued far enough ahead,
+  // the line has arrived by the time the row is scored. A hint only -- the
+  // epoch trains bit-identically with it removed.
+  inline void PrefetchRow(const RowMeta& meta) const {
+    Prefetch(keys.data() + meta.begin * key_stride);
+    if (!vals.empty()) {
+      Prefetch(vals.data() + meta.begin);
+    }
+  }
+
   // Every row's metadata in one array, for a caller that wants to visit the
   // rows in an order of its own -- it permutes this and walks it, rather than
   // permuting indices and paying to look each one up.

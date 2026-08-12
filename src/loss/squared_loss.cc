@@ -98,7 +98,7 @@ void sq_gradient_thread(const DMatrix* matrix,
   // Which loop, decided once for the whole batch -- see ce_gradient_thread().
   if (score_func->PrefersFusedStep()) {
     for (size_t i = start; i < end; ++i) {
-      RowMeta m = rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+      RowMeta m = NextRow(matrix, rows, i, end);
       real_t norm = is_norm ? m.norm : 1.0;
       *sum += score_func->Step(matrix->Row(m), *model, norm,
                                sq_partial_grad, &m.y);
@@ -107,7 +107,7 @@ void sq_gradient_thread(const DMatrix* matrix,
     return;
   }
   for (size_t i = start; i < end; ++i) {
-    RowMeta m = rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+    RowMeta m = NextRow(matrix, rows, i, end);
     RowRef row = matrix->Row(m);
     real_t norm = is_norm ? m.norm : 1.0;
     real_t pred = score_func->CalcScore(row, *model, norm);

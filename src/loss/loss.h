@@ -34,6 +34,25 @@ function or objective function.
 
 namespace xLearn {
 
+// The metadata of row i of a batch, having started the fetch of a row a
+// little further along.
+//
+// A shuffled epoch reads its metadata in order and its columns at random, so
+// the column fetch is the one with nowhere to hide. Four rows ahead is far
+// enough to cover the miss and near enough that the line is still there when
+// the row is scored.
+inline RowMeta NextRow(const DMatrix* matrix,
+                       const std::vector<RowMeta>* rows,
+                       size_t i,
+                       size_t end) {
+  const size_t kPrefetchDistance = 4;
+  if (i + kPrefetchDistance < end) {
+    size_t ahead = i + kPrefetchDistance;
+    matrix->PrefetchRow(rows == nullptr ? matrix->Meta(ahead) : (*rows)[ahead]);
+  }
+  return rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+}
+
 //------------------------------------------------------------------------------
 // The Loss is an abstract class, which can be implemented by the real
 // loss functions such as cross-entropy loss (cross_entropy_loss.h),

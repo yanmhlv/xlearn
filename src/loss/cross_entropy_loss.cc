@@ -136,7 +136,7 @@ static void ce_gradient_thread(const DMatrix* matrix,
   // something to share.
   if (score_func->PrefersFusedStep()) {
     for (size_t i = start_idx; i < end_idx; ++i) {
-      RowMeta m = rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+      RowMeta m = NextRow(matrix, rows, i, end_idx);
       real_t norm = is_norm ? m.norm : 1.0;
       real_t y = m.y > 0 ? 1.0 : -1.0;
       *sum += score_func->Step(matrix->Row(m), *model, norm,
@@ -145,7 +145,7 @@ static void ce_gradient_thread(const DMatrix* matrix,
     return;
   }
   for (size_t i = start_idx; i < end_idx; ++i) {
-    RowMeta m = rows == nullptr ? matrix->Meta(i) : (*rows)[i];
+    RowMeta m = NextRow(matrix, rows, i, end_idx);
     RowRef row = matrix->Row(m);
     real_t norm = is_norm ? m.norm : 1.0;
     real_t pred = score_func->CalcScore(row, *model, norm);
