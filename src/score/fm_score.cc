@@ -100,14 +100,15 @@ inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
 //
 // The gradient wants s and not the pairwise total, so it instantiates this
 // with kWantPair false and that half compiles away.
-template <bool kWantPair, int kChains, int N>
+template <bool kWantPair, int kChains, int N, int AK>
 real_t AccumulateChained(RowRef row,
                          Model& model,
                          real_t norm,
                          const LatentLayout& lay,
                          real_t* s) {
+  const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
   const index_t step = kChains * Vec<N>::Lanes();
-  const index_t unrolled_end = lay.aligned_k - lay.aligned_k % step;
+  const index_t unrolled_end = aligned_k - aligned_k % step;
   Vec<N> total[kChains];
   for (int c = 0; c < kChains; ++c) {
     total[c] = Vec<N>::Zero();
@@ -134,7 +135,7 @@ real_t AccumulateChained(RowRef row,
     }
     // A K too short to fill the chains leaves only this, and one chain is all
     // there is to put it on.
-    for (; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+    for (; d < aligned_k; d += Vec<N>::Lanes()) {
       fold(0, d);
     }
   }
@@ -155,20 +156,39 @@ real_t AccumulateChained(RowRef row,
 // four, and asking for chains the width cannot fill puts every block back on
 // the one tail chain -- which is where the dependency showed up in the first
 // place.
+template <bool kWantPair, int N, int AK>
+real_t AccumulateBlocks(RowRef row,
+                        Model& model,
+                        real_t norm,
+                        const LatentLayout& lay,
+                        real_t* s) {
+  const index_t blocks = (AK != 0 ? AK : lay.aligned_k) / Vec<N>::Lanes();
+  if (blocks >= 4) {
+    return AccumulateChained<kWantPair, 4, N, AK>(row, model, norm, lay, s);
+  }
+  if (blocks >= 2) {
+    return AccumulateChained<kWantPair, 2, N, AK>(row, model, norm, lay, s);
+  }
+  return AccumulateChained<kWantPair, 1, N, AK>(row, model, norm, lay, s);
+}
+
+// And on the plane length itself, where it is one of the two worth compiling
+// for. Almost every model is trained at k <= 8, where the block loop runs
+// once: told so it unrolls away, and with it the compare, the branch and the
+// pointer bumps that cost as much as the one block they guard.
 template <bool kWantPair, int N>
 real_t Accumulate(RowRef row,
                   Model& model,
                   real_t norm,
                   const LatentLayout& lay,
                   real_t* s) {
-  const index_t blocks = lay.aligned_k / Vec<N>::Lanes();
-  if (blocks >= 4) {
-    return AccumulateChained<kWantPair, 4, N>(row, model, norm, lay, s);
+  if (lay.aligned_k == 8) {
+    return AccumulateBlocks<kWantPair, N, 8>(row, model, norm, lay, s);
   }
-  if (blocks >= 2) {
-    return AccumulateChained<kWantPair, 2, N>(row, model, norm, lay, s);
+  if (lay.aligned_k == 4) {
+    return AccumulateBlocks<kWantPair, N, 4>(row, model, norm, lay, s);
   }
-  return AccumulateChained<kWantPair, 1, N>(row, model, norm, lay, s);
+  return AccumulateBlocks<kWantPair, N, 0>(row, model, norm, lay, s);
 }
 
 //------------------------------------------------------------------------------
@@ -181,15 +201,16 @@ real_t Accumulate(RowRef row,
 // reach them.
 //------------------------------------------------------------------------------
 
-template <int N>
-void LatentSgd(RowRef row,
-               Model& model,
-               real_t pg,
-               real_t norm,
-               const LatentLayout& lay,
-               const real_t* s,
-               real_t learning_rate,
-               real_t regu_lambda) {
+template <int N, int AK>
+void LatentSgdAt(RowRef row,
+                 Model& model,
+                 real_t pg,
+                 real_t norm,
+                 const LatentLayout& lay,
+                 const real_t* s,
+                 real_t learning_rate,
+                 real_t regu_lambda) {
+  const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> lr = Vec<N>::Broadcast(learning_rate);
   Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
@@ -200,7 +221,7 @@ void LatentSgd(RowRef row,
     real_t* w = model.GetParameter_v() + j1 * lay.align0;
     Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
     Vec<N> pgv = pg_all * val;
-    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+    for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
       Vec<N> sum = Vec<N>::Load(s+d);
       Vec<N> weight = Vec<N>::Load(w+d);
       Vec<N> grad = MulAdd(lamb, weight, pgv * NegMulAdd(weight, val, sum));
@@ -209,15 +230,16 @@ void LatentSgd(RowRef row,
   }
 }
 
-template <int N>
-void LatentAdagrad(RowRef row,
-                   Model& model,
-                   real_t pg,
-                   real_t norm,
-                   const LatentLayout& lay,
-                   const real_t* s,
-                   real_t learning_rate,
-                   real_t regu_lambda) {
+template <int N, int AK>
+void LatentAdagradAt(RowRef row,
+                     Model& model,
+                     real_t pg,
+                     real_t norm,
+                     const LatentLayout& lay,
+                     const real_t* s,
+                     real_t learning_rate,
+                     real_t regu_lambda) {
+  const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> lr = Vec<N>::Broadcast(learning_rate);
   Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
@@ -228,29 +250,30 @@ void LatentAdagrad(RowRef row,
     real_t* w = model.GetParameter_v() + j1 * lay.align0;
     Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
     Vec<N> pgv = pg_all * val;
-    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+    for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
       Vec<N> sum = Vec<N>::Load(s+d);
       Vec<N> weight = Vec<N>::Load(w+d);
-      Vec<N> weight_grad = Vec<N>::Load(w+lay.aligned_k+d);
+      Vec<N> weight_grad = Vec<N>::Load(w+aligned_k+d);
       Vec<N> grad = MulAdd(lamb, weight, pgv * NegMulAdd(weight, val, sum));
       weight_grad = MulAdd(grad, grad, weight_grad);
       NegMulAdd(lr, RSqrt(weight_grad) * grad, weight).Store(w+d);
-      weight_grad.Store(w+lay.aligned_k+d);
+      weight_grad.Store(w+aligned_k+d);
     }
   }
 }
 
-template <int N>
-void LatentFtrl(RowRef row,
-                Model& model,
-                real_t pg,
-                real_t norm,
-                const LatentLayout& lay,
-                const real_t* s,
-                real_t inv_alpha_val,
-                real_t beta_val,
-                real_t lambda_1_val,
-                real_t lambda_2_val) {
+template <int N, int AK>
+void LatentFtrlAt(RowRef row,
+                  Model& model,
+                  real_t pg,
+                  real_t norm,
+                  const LatentLayout& lay,
+                  const real_t* s,
+                  real_t inv_alpha_val,
+                  real_t beta_val,
+                  real_t lambda_1_val,
+                  real_t lambda_2_val) {
+  const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> inv_alpha = Vec<N>::Broadcast(inv_alpha_val);
   Vec<N> beta = Vec<N>::Broadcast(beta_val);
@@ -263,10 +286,10 @@ void LatentFtrl(RowRef row,
     real_t* w_base = model.GetParameter_v() + j1 * lay.align0;
     Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
     Vec<N> pgv = pg_all * val;
-    for (index_t d = 0; d < lay.aligned_k; d += Vec<N>::Lanes()) {
+    for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
       real_t* w = w_base + d;
-      real_t* wg = w_base + lay.aligned_k + d;
-      real_t* z = w_base + lay.aligned_k*2 + d;
+      real_t* wg = w_base + aligned_k + d;
+      real_t* z = w_base + aligned_k*2 + d;
       Vec<N> sum = Vec<N>::Load(s+d);
       Vec<N> weight = Vec<N>::Load(w);
       Vec<N> weight_grad = Vec<N>::Load(wg);
@@ -286,6 +309,74 @@ void LatentFtrl(RowRef row,
       IfThenZeroElse(Abs(z_val) <= l1,
                      numerator / denominator).Store(w);
     }
+  }
+}
+
+// Each of the three above under a compile-time plane length, so that the call
+// sites stay a choice of optimizer and nothing else. See Accumulate() for why
+// the length is worth compiling in.
+template <int N>
+void LatentSgd(RowRef row,
+               Model& model,
+               real_t pg,
+               real_t norm,
+               const LatentLayout& lay,
+               const real_t* s,
+               real_t learning_rate,
+               real_t regu_lambda) {
+  if (lay.aligned_k == 8) {
+    LatentSgdAt<N, 8>(row, model, pg, norm, lay, s,
+                      learning_rate, regu_lambda);
+  } else if (lay.aligned_k == 4) {
+    LatentSgdAt<N, 4>(row, model, pg, norm, lay, s,
+                      learning_rate, regu_lambda);
+  } else {
+    LatentSgdAt<N, 0>(row, model, pg, norm, lay, s,
+                      learning_rate, regu_lambda);
+  }
+}
+
+template <int N>
+void LatentAdagrad(RowRef row,
+                   Model& model,
+                   real_t pg,
+                   real_t norm,
+                   const LatentLayout& lay,
+                   const real_t* s,
+                   real_t learning_rate,
+                   real_t regu_lambda) {
+  if (lay.aligned_k == 8) {
+    LatentAdagradAt<N, 8>(row, model, pg, norm, lay, s,
+                          learning_rate, regu_lambda);
+  } else if (lay.aligned_k == 4) {
+    LatentAdagradAt<N, 4>(row, model, pg, norm, lay, s,
+                          learning_rate, regu_lambda);
+  } else {
+    LatentAdagradAt<N, 0>(row, model, pg, norm, lay, s,
+                          learning_rate, regu_lambda);
+  }
+}
+
+template <int N>
+void LatentFtrl(RowRef row,
+                Model& model,
+                real_t pg,
+                real_t norm,
+                const LatentLayout& lay,
+                const real_t* s,
+                real_t inv_alpha_val,
+                real_t beta_val,
+                real_t lambda_1_val,
+                real_t lambda_2_val) {
+  if (lay.aligned_k == 8) {
+    LatentFtrlAt<N, 8>(row, model, pg, norm, lay, s,
+                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
+  } else if (lay.aligned_k == 4) {
+    LatentFtrlAt<N, 4>(row, model, pg, norm, lay, s,
+                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
+  } else {
+    LatentFtrlAt<N, 0>(row, model, pg, norm, lay, s,
+                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
   }
 }
 
