@@ -538,25 +538,31 @@ class AUCMetric : public Metric {
   std::vector<index_t> all_positive_number_;
   std::vector<index_t> all_negative_number_;
 
-  real_t CalcAUC(std::vector<index_t> positive_vec,
-                 std::vector<index_t> negative_vec) {
+  // The histograms are a million buckets wide, so taking them by value copied
+  // eight megabytes per call -- and then read the members anyway, which is why
+  // nobody noticed.
+  real_t CalcAUC(const std::vector<index_t>& positive_vec,
+                 const std::vector<index_t>& negative_vec) {
     CHECK_EQ(positive_vec.size(), negative_vec.size());
     long long positive_sum = 0;
     long long negative_sum= 0;
     long long pre_positive_sum = 0.0;
-    long long positivesum_dot_negativesum = 0;
     double auc = 0.0;
-    double auc_res = 0.0;
     for (index_t i = 0; i < kMaxBucketSize; ++i) {
       pre_positive_sum = positive_sum;
-      positive_sum += all_positive_number_[i];
-      negative_sum += all_negative_number_[i];
-      auc += (pre_positive_sum + positive_sum) * 
-             (double)(all_negative_number_[i]) * 1.0 / 2;
+      positive_sum += positive_vec[i];
+      negative_sum += negative_vec[i];
+      auc += (pre_positive_sum + positive_sum) *
+             (double)(negative_vec[i]) * 1.0 / 2;
     }
-    positivesum_dot_negativesum = positive_sum * negative_sum;
-    auc_res = auc / (positivesum_dot_negativesum);
-    return 1.0 - auc_res;
+    // With one class absent there is no pair to rank, and the ratio below is
+    // 0/0. Report the value a coin flip would earn rather than a NaN, which
+    // compares false against everything and would tell early stopping that no
+    // epoch ever improved.
+    if (positive_sum == 0 || negative_sum == 0) {
+      return 0.5;
+    }
+    return 1.0 - auc / (double)(positive_sum * negative_sum);
   }
 
  private:
