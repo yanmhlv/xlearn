@@ -51,6 +51,9 @@ class FMScore : public Score {
                 real_t pg,
                 real_t norm = 1.0);
 
+  // Start fetching the linear weights and latent blocks this row will read.
+  void PrefetchParams(RowRef row, Model& model);
+
   // The latent sum scoring builds is exactly what the gradient needs.
   bool PrefersFusedStep() const { return true; }
 

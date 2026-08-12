@@ -55,6 +55,11 @@ public:
                real_t pg,
                real_t norm = 1.0);
 
+ // PrefetchParams() is deliberately not implemented. A feature's blocks for
+ // every field span eleven cache lines on production data, so fetching the
+ // first buys nothing, and the pairs then read them at scattered field
+ // offsets: measured flat on a 104 MB model, where FM's gained 23%.
+
  // Scoring resolves the row into terms and the gradient wants exactly those,
  // over latent blocks the linear update cannot have moved -- so the split path
  // resolves them a second time for nothing. That measured 7% of an epoch.

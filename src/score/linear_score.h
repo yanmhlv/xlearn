@@ -50,6 +50,9 @@ class LinearScore : public Score {
                 real_t pg,
                 real_t norm = 1.0);
 
+  // Start fetching the linear weights this row will read.
+  void PrefetchParams(RowRef row, Model& model);
+
  protected:
   // Calculate gradient and update model using sgd
   void calc_grad_sgd(RowRef row,

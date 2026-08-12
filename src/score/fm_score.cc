@@ -414,6 +414,22 @@ real_t FMScore::CalcScore(RowRef row,
                   : Accumulate<true, 4>(row, model, norm, lay, s));
 }
 
+// The row's linear weights and latent blocks, on their way before the row is
+// scored. Only the first line of each block: the rest follow it in memory,
+// which the hardware prefetcher picks up once the kernel reaches them.
+void FMScore::PrefetchParams(RowRef row, Model& model) {
+  real_t* w = model.GetParameter_w();
+  real_t* v = model.GetParameter_v();
+  index_t auxiliary_size = model.GetAuxiliarySize();
+  LatentLayout lay = LayoutOf(model);
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
+    if (feat_id >= lay.num_feat) continue;
+    Prefetch(w + feat_id * auxiliary_size);
+    Prefetch(v + feat_id * lay.align0);
+  }
+}
+
 // Calculate gradient and update current model parameters.
 // Using SIMD to accelerate vector operation.
 void FMScore::CalcGrad(RowRef row,

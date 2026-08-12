@@ -116,6 +116,14 @@ class Score {
   // measured 17% on LR before this existed.
   virtual bool PrefersFusedStep() const { return false; }
 
+  // Start fetching the parameter blocks a row will read, without waiting.
+  //
+  // A second, shorter stage of the pipeline the row prefetch begins: which
+  // parameters a row touches is only known once its feature ids have arrived,
+  // so this is issued for a row whose columns are already in cache. A hint
+  // only -- the epoch trains bit-identically with it removed.
+  virtual void PrefetchParams(RowRef row, Model& model) { }
+
   // Score one example and apply the resulting gradient, returning the loss.
   // Only called when PrefersFusedStep() is true.
   virtual real_t Step(RowRef row,

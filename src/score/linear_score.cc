@@ -47,6 +47,18 @@ real_t LinearScore::CalcScore(RowRef row,
   return score;
 }
 
+// The row's linear weights, on their way before the row is scored.
+void LinearScore::PrefetchParams(RowRef row, Model& model) {
+  real_t* w = model.GetParameter_w();
+  index_t num_feat = model.GetNumFeature();
+  index_t auxiliary_size = model.GetAuxiliarySize();
+  for (index_t n = 0; n < row.len; ++n) {
+    index_t feat_id = row.feat(n);
+    if (feat_id >= num_feat) continue;
+    Prefetch(w + feat_id * auxiliary_size);
+  }
+}
+
 // Calculate gradient and update current model
 void LinearScore::CalcGrad(RowRef row,
                            Model& model,

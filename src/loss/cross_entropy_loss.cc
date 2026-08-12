@@ -130,13 +130,15 @@ static void ce_gradient_thread(const DMatrix* matrix,
                                size_t end_idx) {
   CHECK_GE(end_idx, start_idx);
   *sum = 0;
+  bool prefetch_params = WantsParamPrefetch(*model);
   // Which loop, decided once for the whole batch. Step() lets a score
   // function keep what scoring and the gradient share, but it reaches the
   // loss through a pointer it cannot inline -- worth it only where there is
   // something to share.
   if (score_func->PrefersFusedStep()) {
     for (size_t i = start_idx; i < end_idx; ++i) {
-      RowMeta m = NextRow(matrix, rows, i, end_idx);
+      RowMeta m = NextRow(matrix, rows, score_func, model, prefetch_params,
+                            i, end_idx);
       real_t norm = is_norm ? m.norm : 1.0;
       real_t y = m.y > 0 ? 1.0 : -1.0;
       *sum += score_func->Step(matrix->Row(m), *model, norm,
@@ -145,7 +147,8 @@ static void ce_gradient_thread(const DMatrix* matrix,
     return;
   }
   for (size_t i = start_idx; i < end_idx; ++i) {
-    RowMeta m = NextRow(matrix, rows, i, end_idx);
+    RowMeta m = NextRow(matrix, rows, score_func, model, prefetch_params,
+                            i, end_idx);
     RowRef row = matrix->Row(m);
     real_t norm = is_norm ? m.norm : 1.0;
     real_t pred = score_func->CalcScore(row, *model, norm);
