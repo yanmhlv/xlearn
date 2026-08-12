@@ -33,7 +33,17 @@ Held-out AUC is equal or better in 8 of 9 model/optimizer combinations, and two 
 
 <img src="https://github.com/aksnzhy/xLearn/raw/master/img/code.png" width = "600"/>
 
-xLearn does not rely on any third-party library and users can just clone the code and compile it by using cmake. Also, xLearn supports very simple Python and CLI interface for data scientists, and it also offers many useful features that have been widely used in machine learning and data mining competitions, such as cross-validation, early-stop, etc.
+Users can just clone the code and compile it by using cmake — the one runtime dependency, [Google Highway](https://github.com/google/highway), is fetched at configure time, so there is nothing to install first. Also, xLearn supports very simple Python and CLI interface for data scientists, and it also offers many useful features that have been widely used in machine learning and data mining competitions, such as cross-validation, early-stop, etc.
+
+#### Dependencies
+
+| | | |
+|---|---|---|
+| [Google Highway](https://github.com/google/highway) 1.4.0 | portable SIMD behind `src/base/simd.h` | always |
+| [GoogleTest](https://github.com/google/googletest) 1.18.0 | unit tests | `XLEARN_BUILD_TESTS=ON` |
+| [Google Benchmark](https://github.com/google/benchmark) 1.9.5 | kernel microbenchmarks | `XLEARN_BUILD_TESTS=ON` |
+
+All three are fetched by CMake's `FetchContent` at configure time and pinned to a tag; none needs to be installed, vendored, or carried as a submodule. Highway is the only one linked into the shipped binaries, and it is header-and-static-library only. Why it is used at all, rather than raw intrinsics or plain auto-vectorization, is in [PERFORMANCE.md](PERFORMANCE.md).
 
 ### Scalability
 

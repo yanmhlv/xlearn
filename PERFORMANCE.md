@@ -168,9 +168,52 @@ permutation** — close to not shuffling at all.
 of magnitude outside the ±0.004 seed band for sgd. FM and FFM sgd move less
 because their latent terms dominate.
 
-## 6. Make the vector width a parameter, capped per target
+## 6. Google Highway for SIMD, with the width a per-call parameter
 
-**Status:** accepted.
+**Status:** accepted. Two decisions in one area — which SIMD layer, and how wide.
+
+### 6a. Why a portable SIMD library rather than intrinsics
+
+**Problem.** The latent kernels are the whole cost of FM and FFM and they have
+to vectorize. Three ways to get there, and CI builds all three of ubuntu
+(x86-64), macOS (arm64/NEON) and Windows (MSVC), so none of them is optional
+work:
+
+- **Raw intrinsics.** `_mm256_fmadd_ps` and `vfmaq_f32` are different functions
+  with different headers and different availability, so every kernel becomes two
+  or three `#ifdef` branches that must be kept in step. The kernels here are
+  already the subtlest code in the tree; tripling them is how the branches
+  silently diverge.
+- **Auto-vectorization alone.** It does not reliably produce a *fused*
+  multiply-add, and the fusion is the point: a multiply and an add that reach
+  the compiler as two separate operations are not fused, so spelling out
+  `MulAdd` is the only way to get the instruction where one exists. It also
+  cannot be relied on for the reduction and select patterns FTRL needs.
+- **`std::experimental::simd`.** Not available across all three compilers at the
+  standard this project targets.
+
+**Decision.** [Google Highway](https://github.com/google/highway), pinned to
+1.4.0 and fetched by CMake's `FetchContent` at configure time — no submodule, no
+vendored copy, nothing for a user to install first.
+
+It is wrapped in a thin `Vec<N>` in `src/base/simd.h` rather than used directly.
+That wrapper is the load-bearing part: it keeps `hwy` out of the twenty-odd
+kernel loops that would otherwise name it, so the operator set the kernels see
+(`+ - * /`, `MulAdd`, `NegMulAdd`, `Sqrt`, `RSqrt`, `Abs`, `CopySign`,
+`IfThenZeroElse`) is small, and swapping the layer underneath would be one file.
+It is also what makes 6b expressible at all — the width becomes a template
+parameter on our type rather than a different Highway tag at every call site.
+
+**Consequences.** A build-time network fetch, which is why `HWY_ENABLE_TESTS`,
+`EXAMPLES`, `CONTRIB` and `INSTALL` are all forced off — only the library
+itself is built. Highway is compiled with its own flags, deliberately, because
+it chooses its instruction sets itself; our `xlearn_flags` target is declared
+after it for that reason.
+
+Highway's **static** dispatch is what is used, not `HWY_DYNAMIC_DISPATCH`. That
+is a deliberate trade with one visible cost, in 6b.
+
+### 6b. Why the width is chosen per call
 
 **Problem.** `Float4` fixed the width at four lanes because `kAlign` is baked
 into the serialized model. FFM went further and interleaved optimizer state

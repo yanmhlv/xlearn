@@ -58,6 +58,24 @@ release, at equal or better held-out quality. Two on-disk formats changed; see
 - `Model::Initialize()` takes a seed, so a run can be repeated exactly and a
   family of runs can differ.
 
+#### Dependencies
+
+xLearn previously vendored nothing and linked nothing. It now has one runtime
+dependency and two test-only ones, all fetched by CMake's `FetchContent` at
+configure time and pinned to a tag — nothing to install, vendor, or carry as a
+submodule.
+
+- **[Google Highway](https://github.com/google/highway) 1.4.0**, the portable
+  SIMD layer behind `src/base/simd.h`, and the only one linked into the shipped
+  binaries. Chosen over per-ISA intrinsics, which would have made each kernel
+  two or three `#ifdef` branches to keep in step, and over plain
+  auto-vectorization, which does not reliably fuse a multiply and an add that
+  reach it as separate operations. `HWY_ENABLE_TESTS`, `EXAMPLES`, `CONTRIB` and
+  `INSTALL` are forced off, so only the library is built.
+- **[GoogleTest](https://github.com/google/googletest) 1.18.0** and
+  **[Google Benchmark](https://github.com/google/benchmark) 1.9.5**, fetched
+  only when `XLEARN_BUILD_TESTS=ON`.
+
 ### Changed
 
 - **Examples are stored as columns** rather than as a separately heap-allocated
