@@ -90,4 +90,36 @@ TEST_F(LinearScoreTest, calc_score_overflow) {
   EXPECT_FLOAT_EQ(val, 600.0);
 }
 
+// ftrl_linear_grad() is shared by all three score functions, and it had no
+// test at all. L2 belongs to ftrl's proximal step -- the lambda_2 in the
+// weight denominator -- so the gradient handed to ftrl_update() is the loss
+// gradient alone. Applying lambda_2 in both places lets a nonzero weight
+// manufacture a gradient out of itself, which shows up with no loss gradient
+// at all: the weights move when nothing was learned.
+TEST_F(LinearScoreTest, calc_grad_ftrl_zero_pg_moves_nothing) {
+  RowBuffer buf;
+  Model model;
+  model.Initialize(param.score_func,
+                param.loss_func,
+                param.num_feature,
+                0, 0, 3);
+  real_t* w = model.GetParameter_w();
+  index_t num_w = model.GetNumParameter_w();
+  for (index_t i = 0; i < num_w; i += 3) {
+    w[i] = 3.0;
+  }
+  for (index_t i = 0; i < kLength; ++i) {
+    buf.Add(i, 2.0);
+  }
+  LinearScore score;
+  std::string opt_type("ftrl");
+  // No l1 band, and an l2 large enough that a doubled one is unmissable.
+  score.Initialize(0.1, 0, 0.3, 1.0, 0, 0.5, opt_type);
+  score.CalcGrad(buf, model, 0.0);
+  for (index_t i = 0; i < num_w; i += 3) {
+    EXPECT_FLOAT_EQ(w[i], 0.0);
+  }
+  EXPECT_FLOAT_EQ(model.GetParameter_b()[0], 0.0);
+}
+
 } // namespace xLearn

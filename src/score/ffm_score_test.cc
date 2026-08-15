@@ -201,4 +201,45 @@ TEST(FFMScore_Test, calc_grad_ftrl_outside_l1_band) {
   }
 }
 
+// L2 belongs to ftrl's proximal step, which is the lambda_2 in the weight
+// denominator. Feeding lambda_2 * weight into the gradient as well applies it
+// twice, and with no loss gradient at all the weights still move -- a nonzero
+// weight manufacturing a gradient out of itself. Both ftrl tests above run at
+// lambda_2 = 0, where the two placements cannot be told apart.
+TEST(FFMScore_Test, calc_grad_ftrl_zero_pg_moves_nothing) {
+  for (index_t k = 1; k < 40; ++k) {
+    Model model;
+    model.Initialize("ffm", "squared", 3, 3, k, 3);
+    RowBuffer buf;
+    const index_t kRowLen = 3;
+    for (index_t i = 0; i < kRowLen; ++i) {
+      buf.Add(i, 2.0, i);
+    }
+    FFMScore score;
+    std::string opt_type("ftrl");
+    // No l1 band, and an l2 large enough that a doubled one is unmissable.
+    score.Initialize(0.1, 0, 0.3, 1.0, 0, 0.5, opt_type);
+    score.CalcGrad(buf, model, 0.0);
+    real_t* v = model.GetParameter_v();
+    real_t* w = model.GetParameter_w();
+    index_t k_aligned = model.get_aligned_k();
+    index_t align0 = 3 * k_aligned;
+    index_t align1 = model.GetNumField() * align0;
+    for (index_t j = 0; j < model.GetNumFeature(); ++j) {
+      for (index_t f = 0; f < model.GetNumField(); ++f) {
+        // A pair reaches (feature, other field) blocks only, so the diagonal
+        // keeps its initial value and says nothing about the update.
+        if (j == f) continue;
+        real_t* base = v + j*align1 + f*align0;
+        for (index_t d = 0; d < model.GetNumK(); ++d) {
+          EXPECT_FLOAT_EQ(base[d], 0.0);
+        }
+      }
+    }
+    for (index_t i = 0; i < model.GetNumParameter_w(); i += 3) {
+      EXPECT_FLOAT_EQ(w[i], 0.0);
+    }
+  }
+}
+
 } // namespace xLearn

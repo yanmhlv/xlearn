@@ -26,6 +26,11 @@ This file contains facilitlies to control the file.
 #else
 #include "src/base/unistd.h"
 #endif
+#ifdef _WIN32
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 #include <fcntl.h>
 #include <string.h>
 
@@ -219,12 +224,62 @@ inline size_t ReadDataFromDisk(FILE *file, char *buf, size_t len) {
   return ret;
 }
 
+// The same read where anything short of len is a corrupt file rather than a
+// partial block.
+//
+// ReadDataFromDisk() has to tolerate a short read: the block readers walk a
+// file to its end and the last block is short by design. Everywhere else a
+// count is read from the file and then used to size the read that follows, so
+// a short read means the file ended inside a record whose length said
+// otherwise -- and returning quietly there leaves the unread tail
+// value-initialized, which is a plausible number rather than a detectable one.
+inline void ReadDataFromDiskOrDie(FILE *file, char *buf, size_t len) {
+  if (ReadDataFromDisk(file, buf, len) != len) {
+    LOG(FATAL) << "Error: file ended inside a record; it is truncated.";
+  }
+}
+
 // Delete target file from disk.
 inline void RemoveFile(const char *filename) {
   CHECK_NOTNULL(filename);
   if (remove(filename) == -1) {
     LOG(FATAL) << "Error: invoke remove().";
   }
+}
+
+// Move a fully written file onto its final name, replacing whatever is there.
+//
+// What a serializer writes straight to its final path leaves behind on a full
+// disk or a kill is a partial file under the name a reader looks for, and the
+// header that reader validates sits at the front -- written first, and so
+// intact in exactly the case where the body is not. Publishing by a move that
+// replaces in one step leaves the final name holding either the previous file
+// or one written all the way to the end, and never a half of the new one.
+//
+// Replacing is where the two platforms differ rather than agree. POSIX
+// rename() overwrites an existing destination; the Windows CRT requires the
+// destination not to exist and fails with EACCES when it does, so a plain
+// rename() there turns every re-run over an existing model or cache into a
+// failure -- after the work is done. MoveFileEx is the call that carries the
+// POSIX meaning, and the predicate is _WIN32 and not the _MSC_VER used
+// elsewhere in this header: those branches stand in for headers MSVC lacks,
+// while this one is about CRT semantics MinGW shares.
+inline void RenameFileOrDie(const std::string &from, const std::string &to) {
+#ifdef _WIN32
+  if (MoveFileExA(from.c_str(), to.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
+    LOG(FATAL) << "Error: invoke MoveFileEx().";
+  }
+#else
+  if (rename(from.c_str(), to.c_str()) != 0) {
+    LOG(FATAL) << "Error: invoke rename().";
+  }
+#endif
+}
+
+// The name a file is written under before RenameFileOrDie() publishes it.
+inline std::string PendingName(const std::string &filename) {
+  return filename + ".tmp";
 }
 
 // Format the file size by GB, MB, and KB
@@ -285,12 +340,13 @@ void ReadVectorFromFile(FILE *file_ptr, std::vector<T> &vec) {
   CHECK_NOTNULL(file_ptr);
   // First, read the length of vector
   size_t len = 0;
-  ReadDataFromDisk(file_ptr, reinterpret_cast<char *>(&len), sizeof(len));
+  ReadDataFromDiskOrDie(file_ptr, reinterpret_cast<char *>(&len), sizeof(len));
   // Clear the original vector
   std::vector<T>().swap(vec);
   vec.resize(len);
   if (len > 0) {
-    ReadDataFromDisk(file_ptr, reinterpret_cast<char *>(vec.data()), sizeof(T)*len);
+    ReadDataFromDiskOrDie(file_ptr, reinterpret_cast<char *>(vec.data()),
+                          sizeof(T)*len);
   }
 }
 
@@ -311,12 +367,12 @@ inline void ReadStringFromFile(FILE *file_ptr, std::string &str) {
   CHECK_NOTNULL(file_ptr);
   // First, read the length of vector
   size_t len = 0;
-  ReadDataFromDisk(file_ptr, reinterpret_cast<char *>(&len), sizeof(len));
+  ReadDataFromDiskOrDie(file_ptr, reinterpret_cast<char *>(&len), sizeof(len));
   CHECK_GT(len, 0);
   // Clear the original string
   std::string().swap(str);
   str.resize(len);
-  ReadDataFromDisk(file_ptr, const_cast<char *>(str.data()), len);
+  ReadDataFromDiskOrDie(file_ptr, const_cast<char *>(str.data()), len);
 }
 
 //------------------------------------------------------------------------------

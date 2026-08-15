@@ -167,6 +167,12 @@ class Score {
   // The ftrl update of the linear weights and the bias, shared by all three
   // score functions: the rule is the same wherever a feature has one weight,
   // and only the latent term below it differs.
+  //
+  // What ftrl_update() is handed is the gradient of the loss alone. L2 belongs
+  // to the proximal step and is already in that update's denominator, so
+  // adding lambda_2 * weight here as well applies it twice: with no loss
+  // gradient at all, a nonzero weight would move n and z as though an example
+  // had arrived, and then be penalized again on the way out.
   void ftrl_linear_grad(RowRef row, Model& model, real_t pg, real_t norm) {
     real_t sqrt_norm = std::sqrt(norm);
     real_t* w = model.GetParameter_w();
@@ -176,7 +182,7 @@ class Score {
       // To avoid unseen feature
       if (feat_id >= num_feat) continue;
       real_t* p = w + feat_id * 3;
-      this->ftrl_update(p, lambda_2_ * p[0] + pg * row.val(n) * sqrt_norm);
+      this->ftrl_update(p, pg * row.val(n) * sqrt_norm);
     }
     // bias
     this->ftrl_update(model.GetParameter_b(), pg);

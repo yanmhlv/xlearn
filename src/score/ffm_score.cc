@@ -256,8 +256,10 @@ void LatentFtrlAt(const std::vector<Term>& terms,
         Vec<N> weight_grad2 = Vec<N>::Load(wg2);
         Vec<N> z_val1 = Vec<N>::Load(z1);
         Vec<N> z_val2 = Vec<N>::Load(z2);
-        Vec<N> grad1 = MulAdd(l2, weight1, pgv * weight2);
-        Vec<N> grad2 = MulAdd(l2, weight2, pgv * weight1);
+        // The loss gradient alone; l2 is the proximal term in the denominators
+        // below, and adding it here as well would apply it twice.
+        Vec<N> grad1 = pgv * weight2;
+        Vec<N> grad2 = pgv * weight1;
         Vec<N> grad_sq1 = grad1 * grad1;
         Vec<N> grad_sq2 = grad2 * grad2;
         Vec<N> sigma1 = (Sqrt(weight_grad1 + grad_sq1)

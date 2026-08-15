@@ -128,6 +128,105 @@ TEST(DMATRIX_TEST, Serialize_and_Deserialize) {
 #endif
 }
 
+#ifndef _MSC_VER
+// A cache truncated inside its last vector passed every check below: each one
+// compares sizes, and the sizes come from length fields written before the
+// truncation point, while the tail that never arrived reads back as zeros.
+// norm is the last vector written, and a row at norm = 0 scores and gradients
+// as though it carried no features at all -- so the run trains, finishes, and
+// is quietly worse.
+TEST(DMATRIX_TEST, Deserialize_rejects_truncation) {
+  const char* filename = "/tmp/test_truncated.bin";
+  DMatrix matrix;
+  matrix.Reset();
+  for (size_t i = 0; i < kLength; ++i) {
+    matrix.AddRow();
+    matrix.AddNode(i, i, 2.5, i);
+    matrix.Y[i] = i;
+    matrix.norm[i] = 0.25;
+  }
+  matrix.SetHash(1234, 5678);
+  matrix.Serialize(filename);
+
+  FILE* file = OpenFileOrDie(filename, "r");
+  uint64 full_size = GetFileSize(file);
+  Close(file);
+  // One element inside the norm payload, past every length field that would
+  // otherwise catch it.
+  ASSERT_EQ(truncate(filename, full_size - sizeof(real_t)), 0);
+
+  DMatrix truncated;
+  EXPECT_DEATH(truncated.Deserialize(filename), "");
+  RemoveFile(filename);
+}
+
+// Serialize publishes by rename, so a reader never opens a partial file and
+// nothing is left under the pending name.
+TEST(DMATRIX_TEST, Serialize_leaves_no_pending_file) {
+  const std::string filename("/tmp/test_pending.bin");
+  DMatrix matrix;
+  matrix.Reset();
+  for (size_t i = 0; i < kLength; ++i) {
+    matrix.AddRow();
+    matrix.AddNode(i, i, 2.5, i);
+    matrix.Y[i] = i;
+    matrix.norm[i] = 0.25;
+  }
+  matrix.SetHash(1234, 5678);
+  matrix.Serialize(filename);
+
+  EXPECT_TRUE(FileExist(filename.c_str()));
+  EXPECT_FALSE(FileExist(PendingName(filename).c_str()));
+  RemoveFile(filename.c_str());
+}
+#endif
+
+// Publishing has to replace a cache that is already there, which is the case a
+// first run on a clean machine never reaches and every re-run does. It is also
+// where the two platforms disagree: POSIX rename() overwrites and the Windows
+// CRT refuses, so this runs everywhere rather than under the guard above.
+TEST(DMATRIX_TEST, Serialize_replaces_an_existing_file) {
+#ifndef _MSC_VER
+  const std::string filename("/tmp/test_overwrite.bin");
+#else
+  const std::string filename("../../test_overwrite.bin");
+#endif
+  DMatrix first;
+  first.Reset();
+  for (size_t i = 0; i < kLength; ++i) {
+    first.AddRow();
+    first.AddNode(i, i, 2.5, i);
+    first.Y[i] = i;
+    first.norm[i] = 0.25;
+  }
+  first.SetHash(1234, 5678);
+  first.Serialize(filename);
+
+  DMatrix second;
+  second.Reset();
+  for (size_t i = 0; i < kLength; ++i) {
+    second.AddRow();
+    second.AddNode(i, i, 7.5, i);
+    second.Y[i] = i;
+    second.norm[i] = 0.5;
+  }
+  second.SetHash(8765, 4321);
+  second.Serialize(filename);
+
+  DMatrix loaded;
+  loaded.Deserialize(filename);
+  EXPECT_EQ(loaded.hash_value_1, 8765);
+  EXPECT_EQ(loaded.hash_value_2, 4321);
+  for (size_t i = 0; i < kLength; ++i) {
+    EXPECT_FLOAT_EQ(loaded.norm[i], 0.5);
+    RowRef row = loaded.Row(i);
+    for (index_t j = 0; j < row.len; ++j) {
+      EXPECT_FLOAT_EQ(row.val(j), 7.5);
+    }
+  }
+  RemoveFile(filename.c_str());
+}
+
 TEST(DMATRIX_TEST, Find_Max_Feat_and_Field) {
   DMatrix matrix;
   matrix.Reset();

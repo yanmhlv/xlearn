@@ -111,6 +111,39 @@ submodule.
 
 ### Fixed
 
+- **FTRL applied `lambda_2` twice, over-regularizing every model trained with
+  it.** The proximal step already carries L2 in the weight denominator
+  (`(beta + sqrt(n))/alpha + lambda_2`), and the gradient handed to it added
+  `lambda_2 * weight` on top. The gradient fed to an FTRL update is the loss
+  gradient alone, so with no loss gradient at all a nonzero weight still moved
+  `n` and `z` as though an example had arrived, and was then penalized again on
+  the way out. Affected the linear and bias terms of all three score functions
+  and the FM and FFM latent kernels; the bias alone was already correct. The
+  penalty grows as `lambda_2` is tuned up, so the symptom was that raising it
+  hurt more than it should. `lambda_2` defaults to `0.00002`, so every default
+  FTRL run was affected.
+- **FM applied the row normalizer once per factor instead of once per pair**, so
+  a pairwise term carried `norm` twice and was weighted by `1/||x||^4` where
+  normalization calls for `1/||x||^2`. The linear term beside it already used
+  `sqrt(norm)`, and FFM already applied exactly one `norm` per pair, so FM was
+  the only one of the three that disagreed — by a factor of `||x||^-2`, varying
+  per row. Score and gradient shared the error, so training converged cleanly on
+  a differently-scaled objective and nothing reported a problem. Affects FM
+  whenever `norm` is on, which is the default. An FM model trained by an earlier
+  build scores differently under this one; the checkpoint format is unchanged, so
+  no file needs converting, but held-out numbers move and are worth re-measuring.
+- **A `.bin` cache truncated inside its last vector was read back as zeros
+  rather than refused.** `ReadVectorFromFile` sized the vector from the length
+  field and then discarded the payload read's return value, so the tail that
+  never arrived was value-initialised. `norm` is the last vector written, and
+  every check on the body compares sizes drawn from length fields written before
+  the truncation point — so that one vector had no check that could fire. At
+  `norm = 0` a row contributes nothing to the score and produces no feature
+  gradient: the affected rows trained as if empty, with only the bias moving.
+  Reads that must consume a full record now fail on a short one, and both
+  `DMatrix::Serialize` and `Model::Serialize` write under a pending name and
+  rename onto the final one, so a run killed mid-write leaves no file for the
+  next run to pick up.
 - **Every epoch shuffled Examples into the same order.** The generator was
   reconstructed from a fixed seed at each epoch, which is close to not shuffling
   at all. Held-out AUC for LR under sgd improves from 0.63015 to 0.68146.
