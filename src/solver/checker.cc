@@ -81,6 +81,11 @@ OPTIONS:
   -r <learning_rate>   :  Learning rate for stochastic gradient descent. Using 0.2 by default. 
                           xLearn uses adaptive gradient descent (AdaGrad) for optimization problem, 
                           and the learning rate will be changed adaptively. 
+                          'sgd' takes this value as given, so it is the one optimizer whose step 
+                          scales with the model. An fm task under 'sgd' with normalization on 
+                          wants a markedly smaller value than a linear one -- measured best was 
+                          around 0.05 where a linear task preferred 0.2. 'adagrad' and 'ftrl' 
+                          adapt their own step and are far less sensitive. 
                                                                                      
   -b <lambda_for_regu> :  Lambda for L2 regular. Using 0.00002 by default. We can disable the 
                           regular term by setting this value to 0.0 
@@ -91,7 +96,11 @@ OPTIONS:
                                                                         
   -lambda_1            :  Used by ftrl.                                 
                                                                        
-  -lambda_2            :  Used by ftrl.                                
+  -lambda_2            :  L2 for ftrl. Using 0.00002 by default, which is effectively no 
+                          regularization: this value is added to the proximal denominator beside 
+                          (beta + sqrt(n)) / alpha, which grows with the number of updates a 
+                          coordinate has seen, so it is order 100 by the end of a run. Useful 
+                          values are therefore order 1 to 10, not the small fractions -b takes. 
                                                                       
   -u <model_scale>     :  Hyper parameter used for initialize model parameters. 
                           Using 0.66 by default. 

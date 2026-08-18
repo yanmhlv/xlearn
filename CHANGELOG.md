@@ -30,14 +30,41 @@ release, at equal or better held-out quality. Two on-disk formats changed; see
 - **`Loss::Initialize()` lost its `batch_size` parameter** and
   `Loss::CalcGrad()` gained a traversal-order argument. Both are internal C++
   interfaces; the CLI and the Python API are unchanged.
+- **Every `.model` checkpoint from an earlier build is refused, and the format
+  version is now 2.** The FM normalization fix below changes what a stored FM
+  latent weight means without changing where it sits, so an old file loads with
+  nothing to fail on and scores differently than it did when it was validated.
+  That is the same silent wrongness the k > 4 layout change produced, and it
+  gets the same refusal rather than a note in a changelog nobody reads at
+  prediction time. Linear and FFM checkpoints are scored identically by this
+  release and are refused only because the version is a single number for the
+  whole file; retraining them changes nothing but the version they carry.
+- **A tuned `-lambda_2` no longer means what it did.** With the double
+  application removed, `lambda_2` reaches the weights only through ftrl's
+  proximal denominator, beside `(beta + sqrt(n)) / alpha`. That term grows with
+  the number of updates a coordinate has seen and is order 100 by the end of a
+  run, so the useful range for `lambda_2` moved up by roughly four orders of
+  magnitude. A value carried over from an earlier build is not a weaker
+  regularizer than it was — it is no regularizer at all.
 
 ### Migration
 
 - **`.bin` data caches need no action.** A cache is derived from a text file and
   keyed by its content hash, so an unrecognised version is treated as "no cache
   present" and the text is re-parsed. Stale caches are silently regenerated.
-- **Model files must be retrained** if they were trained at k > 4. There is no
-  converter.
+- **Model files must all be retrained.** There is no converter. See the format
+  version note above for why linear and FFM files are included.
+- **Retune `-lambda_2` if you had tuned it**, upward by about four orders of
+  magnitude. On 300k Examples of synthetic CTR data the held-out optimum moved
+  from `0.0002` to `10` for FFM and from the `0.00002` default to `5`-`10` for
+  FM. Left at the default this release simply trains without L2 on the ftrl
+  path, which is a defensible default but a different one than before.
+- **Lower `-r` for `fm` under `-p sgd`.** Correcting the FM normalizer makes the
+  pairwise term larger by a factor of `||x||^2`, and plain sgd is the one
+  optimizer that does not adapt its own step to compensate. On the same data the
+  held-out optimum moved from `0.2` to about `0.05`; left at `0.2` an FM sgd run
+  overshoots and loses about 0.023 AUC. `adagrad` and `ftrl` rescale themselves
+  and both improve at their existing settings, and `adagrad` is the default.
 
 ### Added
 
@@ -111,6 +138,51 @@ submodule.
 
 ### Fixed
 
+- **FTRL applied `lambda_2` twice, over-regularizing every model trained with
+  it.** The proximal step already carries L2 in the weight denominator
+  (`(beta + sqrt(n))/alpha + lambda_2`), and the gradient handed to it added
+  `lambda_2 * weight` on top. The gradient fed to an FTRL update is the loss
+  gradient alone, so with no loss gradient at all a nonzero weight still moved
+  `n` and `z` as though an example had arrived, and was then penalized again on
+  the way out. Affected the linear and bias terms of all three score functions
+  and the FM and FFM latent kernels; the bias alone was already correct. The
+  penalty grows as `lambda_2` is tuned up, so the symptom was that raising it
+  hurt more than it should. `lambda_2` defaults to `0.00002`, so every default
+  FTRL run was affected. How much it hurt is easiest to see at the top of the
+  range: from `lambda_2 = 0.002` up, the old FM and FFM held-out AUC lands on
+  the linear model's number exactly, because the latent factors are driven to
+  zero and the model quietly degenerates to a GLM. Measured on 300k Examples of
+  synthetic CTR data at k = 8, with each build at its own best `lambda_2`, FM
+  ftrl goes from 0.7085 to 0.7500 AUC and 0.5495 to 0.5288 logloss. FFM ftrl is
+  a wash on ranking and better calibrated: 0.6995 to 0.6984 AUC, 0.5653 to
+  0.5595 logloss.
+- **FM applied the row normalizer once per factor instead of once per pair**, so
+  a pairwise term carried `norm` twice and was weighted by `1/||x||^4` where
+  normalization calls for `1/||x||^2`. The linear term beside it already used
+  `sqrt(norm)`, and FFM already applied exactly one `norm` per pair, so FM was
+  the only one of the three that disagreed — by a factor of `||x||^-2`, varying
+  per row. Score and gradient shared the error, so training converged cleanly on
+  a differently-scaled objective and nothing reported a problem. Affects FM
+  whenever `norm` is on, which is the default. An FM model trained by an earlier
+  build scores differently under this one, which is why the checkpoint version is
+  bumped above rather than left to a warning. Held-out numbers move, and on 300k
+  Examples of synthetic CTR data at k = 8 they move up wherever the optimizer
+  adapts its own step: FM adagrad gains 0.019 AUC at stock settings and FM ftrl
+  0.042 at a tuned `lambda_2`. FM sgd is the exception and needs `-r` retuned;
+  see **Migration**. Linear and FFM are unaffected by this fix, and their sgd and
+  adagrad runs are bit-identical across the change.
+- **A `.bin` cache truncated inside its last vector was read back as zeros
+  rather than refused.** `ReadVectorFromFile` sized the vector from the length
+  field and then discarded the payload read's return value, so the tail that
+  never arrived was value-initialised. `norm` is the last vector written, and
+  every check on the body compares sizes drawn from length fields written before
+  the truncation point — so that one vector had no check that could fire. At
+  `norm = 0` a row contributes nothing to the score and produces no feature
+  gradient: the affected rows trained as if empty, with only the bias moving.
+  Reads that must consume a full record now fail on a short one, and both
+  `DMatrix::Serialize` and `Model::Serialize` write under a pending name and
+  rename onto the final one, so a run killed mid-write leaves no file for the
+  next run to pick up.
 - **Every epoch shuffled Examples into the same order.** The generator was
   reconstructed from a fixed seed at each epoch, which is close to not shuffling
   at all. Held-out AUC for LR under sgd improves from 0.63015 to 0.68146.

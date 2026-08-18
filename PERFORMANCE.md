@@ -632,6 +632,30 @@ the memory for LR and FM and 0.78-0.83x for FFM. The one remaining loss is FFM
 adagrad at 1.10x, whose kernel profiles as evenly spread across its vector ops
 with no stall left — that gap is codegen, not structure.
 
+## What the correctness fixes cost
+
+The three bug fixes that followed this work touch the hot kernels, so they were
+measured the same way: nine interleaved rounds on one pinned P-core, against the
+23 benchmark cases whose code did not change. Those cases are the control, and
+they land in a band of **[-1.0%, +1.7%]**, which is what the numbers below have
+to clear to mean anything.
+
+- **FM `CalcScore` pays one scalar `sqrt` per Row** for the normalizer fix:
+  **+2.6%** at k = 4, **+5.7%** at k = 16, and nothing measurable at k = 64,
+  which is the signature of a fixed per-Row cost amortized over more work as K
+  grows. End to end it is visible only on FM adagrad, at +3.6% to +5.6% per
+  epoch, where the per-Row work is smallest.
+- **FFM's ftrl gradient got cheaper**, by **-2.9%** at k = 4 and **-1.2%** at
+  k = 16: dropping the doubled L2 removes one fused multiply-add per lane.
+- **Everything else is inside the control band**, including every FM gradient
+  kernel and all of LR. The FM gradient paths pay the same `sqrt` but amortize
+  it over an update heavy enough to hide it.
+
+A first attempt at this measurement put the *unchanged* parser 4.7% apart and
+was pure contention from other work sharing the host. The controls are what
+caught it; without them the FM `CalcScore` number would have been reported at
++8.8%.
+
 ## Known headroom
 
 - **FFM adagrad**, the one configuration still behind the reference.

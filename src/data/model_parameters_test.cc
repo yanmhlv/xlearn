@@ -196,6 +196,89 @@ TEST(MODEL_TEST, Save_and_Load) {
   RemoveFile(hyper_param.model_file.c_str());
 }
 
+// Re-training to a path that already holds a checkpoint is the ordinary case,
+// and the one a first run on a clean machine never reaches: publishing has to
+// replace the old file rather than refuse it.
+TEST(MODEL_TEST, Save_replaces_an_existing_file) {
+  HyperParam hyper_param = Init();
+  Model first;
+  first.Initialize(hyper_param.score_func,
+                    hyper_param.loss_func,
+                    hyper_param.num_feature,
+                    hyper_param.num_field,
+                    hyper_param.num_K,
+                    hyper_param.auxiliary_size);
+  real_t* w = first.GetParameter_w();
+  for (int i = 0; i < first.GetNumParameter_w(); ++i) {
+    w[i] = 2.5;
+  }
+  first.Serialize(hyper_param.model_file);
+
+  Model second;
+  second.Initialize(hyper_param.score_func,
+                    hyper_param.loss_func,
+                    hyper_param.num_feature,
+                    hyper_param.num_field,
+                    hyper_param.num_K,
+                    hyper_param.auxiliary_size);
+  w = second.GetParameter_w();
+  for (int i = 0; i < second.GetNumParameter_w(); ++i) {
+    w[i] = 9.5;
+  }
+  second.Serialize(hyper_param.model_file);
+
+  Model loaded(hyper_param.model_file);
+  w = loaded.GetParameter_w();
+  for (int i = 0; i < loaded.GetNumParameter_w(); ++i) {
+    EXPECT_FLOAT_EQ(w[i], 9.5);
+  }
+  RemoveFile(hyper_param.model_file.c_str());
+}
+
+TEST(MODEL_TEST, Load_refuses_a_checkpoint_from_an_older_format_version) {
+  HyperParam hyper_param = Init();
+  Model model;
+  model.Initialize(hyper_param.score_func,
+                    hyper_param.loss_func,
+                    hyper_param.num_feature,
+                    hyper_param.num_field,
+                    hyper_param.num_K,
+                    hyper_param.auxiliary_size);
+  model.Serialize(hyper_param.model_file);
+
+  FILE* file = OpenFileOrDie(hyper_param.model_file.c_str(), "r+b");
+  uint32 stale = kModelVersion - 1;
+  ASSERT_EQ(fseek(file, sizeof(kModelMagic), SEEK_SET), 0);
+  WriteDataToDisk(file, (char*)&stale, sizeof(stale));
+  Close(file);
+
+  Model loaded;
+  EXPECT_FALSE(loaded.Deserialize(hyper_param.model_file));
+  RemoveFile(hyper_param.model_file.c_str());
+}
+
+TEST(MODEL_TEST, Load_refuses_a_file_that_is_not_a_checkpoint) {
+  HyperParam hyper_param = Init();
+  Model model;
+  model.Initialize(hyper_param.score_func,
+                    hyper_param.loss_func,
+                    hyper_param.num_feature,
+                    hyper_param.num_field,
+                    hyper_param.num_K,
+                    hyper_param.auxiliary_size);
+  model.Serialize(hyper_param.model_file);
+
+  FILE* file = OpenFileOrDie(hyper_param.model_file.c_str(), "r+b");
+  uint64 not_magic = ~kModelMagic;
+  ASSERT_EQ(fseek(file, 0, SEEK_SET), 0);
+  WriteDataToDisk(file, (char*)&not_magic, sizeof(not_magic));
+  Close(file);
+
+  Model loaded;
+  EXPECT_FALSE(loaded.Deserialize(hyper_param.model_file));
+  RemoveFile(hyper_param.model_file.c_str());
+}
+
 TEST(MODEL_TEST, SerializeToTXT) {
   HyperParam hyper_param = Init();
   // linear

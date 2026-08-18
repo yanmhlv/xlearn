@@ -383,10 +383,11 @@ struct DMatrix {
     CHECK_EQ(row_length + 1, offset.size());
     CHECK_EQ(row_length, Y.size());
     CHECK_EQ(row_length, norm.size());
+    const std::string pending = PendingName(filename);
 #ifndef _MSC_VER
-    FILE* file = OpenFileOrDie(filename.c_str(), "w");
+    FILE* file = OpenFileOrDie(pending.c_str(), "w");
 #else
-    FILE* file = OpenFileOrDie(filename.c_str(), "wb");
+    FILE* file = OpenFileOrDie(pending.c_str(), "wb");
 #endif
     WriteDataToDisk(file, (char*)&kDMatrixMagic, sizeof(kDMatrixMagic));
     WriteDataToDisk(file, (char*)&kDMatrixVersion, sizeof(kDMatrixVersion));
@@ -405,6 +406,7 @@ struct DMatrix {
     WriteVectorToFile(file, Y);
     WriteVectorToFile(file, norm);
     Close(file);
+    RenameFileOrDie(pending, filename);
   }
 
   // Deserialize the DMatrix from disk file.
@@ -417,11 +419,11 @@ struct DMatrix {
     FILE* file = OpenFileOrDie(filename.c_str(), "rb");
 #endif
     CHECK(ReadHeader(file, &hash_value_1, &hash_value_2));
-    ReadDataFromDisk(file, (char*)&row_length, sizeof(row_length));
-    ReadDataFromDisk(file, (char*)&max_feat, sizeof(max_feat));
-    ReadDataFromDisk(file, (char*)&max_field, sizeof(max_field));
-    ReadDataFromDisk(file, (char*)&has_label, sizeof(has_label));
-    ReadDataFromDisk(file, (char*)&key_stride, sizeof(key_stride));
+    ReadDataFromDiskOrDie(file, (char*)&row_length, sizeof(row_length));
+    ReadDataFromDiskOrDie(file, (char*)&max_feat, sizeof(max_feat));
+    ReadDataFromDiskOrDie(file, (char*)&max_field, sizeof(max_field));
+    ReadDataFromDiskOrDie(file, (char*)&has_label, sizeof(has_label));
+    ReadDataFromDiskOrDie(file, (char*)&key_stride, sizeof(key_stride));
     ReadVectorFromFile(file, offset);
     ReadVectorFromFile(file, keys);
     ReadVectorFromFile(file, vals);

@@ -231,10 +231,11 @@ Model::Model(const std::string& filename) {
 // Serialize current model to a disk file
 void Model::Serialize(const std::string& filename) {
   CHECK_NE(filename.empty(), true);
+  const std::string pending = PendingName(filename);
 #ifndef _MSC_VER
-  FILE* file = OpenFileOrDie(filename.c_str(), "w");
+  FILE* file = OpenFileOrDie(pending.c_str(), "w");
 #else
-  FILE *file = OpenFileOrDie(filename.c_str(), "wb");
+  FILE *file = OpenFileOrDie(pending.c_str(), "wb");
 #endif
   // The magic comes before anything else, so that a checkpoint from a build
   // that arranged the parameters differently fails on its opening bytes
@@ -256,6 +257,7 @@ void Model::Serialize(const std::string& filename) {
   // Write w
   this->serialize_w_v_b(file);
   Close(file);
+  RenameFileOrDie(pending, filename);
 }
 
 // Serialize current model to a TXT file.
@@ -351,13 +353,13 @@ bool Model::Deserialize(const std::string& filename) {
   // Read loss function
   ReadStringFromFile(file, loss_func_);
   // Read feature num
-  ReadDataFromDisk(file, (char*)&num_feat_, sizeof(num_feat_));
+  ReadDataFromDiskOrDie(file, (char*)&num_feat_, sizeof(num_feat_));
   // Read field num
-  ReadDataFromDisk(file, (char*)&num_field_, sizeof(num_field_));
+  ReadDataFromDiskOrDie(file, (char*)&num_field_, sizeof(num_field_));
   // Read K
-  ReadDataFromDisk(file, (char*)&num_K_, sizeof(num_K_));
+  ReadDataFromDiskOrDie(file, (char*)&num_K_, sizeof(num_K_));
   // Read aux_size
-  ReadDataFromDisk(file, (char*)&aux_size_, sizeof(aux_size_));
+  ReadDataFromDiskOrDie(file, (char*)&aux_size_, sizeof(aux_size_));
   // Read w
   this->deserialize_w_v_b(file);
   Close(file);
@@ -436,20 +438,20 @@ void Model::serialize_w_v_b(FILE* file) {
 // Deserialize w,v,b from disk file
 void Model::deserialize_w_v_b(FILE* file) {
   // Read size of w
-  ReadDataFromDisk(file, (char*)&param_num_w_, sizeof(param_num_w_));
+  ReadDataFromDiskOrDie(file, (char*)&param_num_w_, sizeof(param_num_w_));
   // Read size of v
   if (score_func_.compare("linear") != 0) {
-    ReadDataFromDisk(file, (char*)&param_num_v_, sizeof(param_num_v_));
+    ReadDataFromDiskOrDie(file, (char*)&param_num_v_, sizeof(param_num_v_));
   }
   // Allocate memory. Don't set value here
   this->initial(false);
   // Read w
-  ReadDataFromDisk(file, (char*)param_w_, sizeof(real_t)*param_num_w_);
+  ReadDataFromDiskOrDie(file, (char*)param_w_, sizeof(real_t)*param_num_w_);
   // Read b
-  ReadDataFromDisk(file, (char*)param_b_, sizeof(real_t)*aux_size_);
+  ReadDataFromDiskOrDie(file, (char*)param_b_, sizeof(real_t)*aux_size_);
   // Read v
   if (score_func_.compare("linear") != 0) {
-    ReadDataFromDisk(file, (char*)param_v_, sizeof(real_t)*param_num_v_);
+    ReadDataFromDiskOrDie(file, (char*)param_v_, sizeof(real_t)*param_num_v_);
   }
 }
 

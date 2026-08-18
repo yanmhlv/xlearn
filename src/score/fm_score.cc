@@ -81,8 +81,18 @@ LatentLayout LayoutOf(Model& model) {
 // four-lane machine running the wide path stays correct.
 inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
 
-// Leaves s = sum_j (v_j * x_j) in the caller's buffer and returns
-// sum_{i<j} (v_i x_i)(v_j x_j), from one walk over the row's latent blocks.
+// Leaves s = sum_j (v_j * x_j * sqrt(norm)) in the caller's buffer and returns
+// sum_{i<j} (v_i x_i)(v_j x_j) * norm, from one walk over the row's latent
+// blocks.
+//
+// The normalizer goes on each factor as sqrt(norm), never on the product.
+// Instance normalization scores x/||x||, and norm is 1/||x||^2, so a feature
+// scales by sqrt(norm) -- the same sqrt_norm the linear term uses in
+// CalcScore() below. A pair then carries exactly one norm. Putting the whole
+// norm on each factor squares it, which weights the pairwise term by
+// 1/||x||^4 and silently trains a differently-scaled model; every latent
+// update below repeats this scaling and has to keep agreeing with it, since
+// they read the s this leaves behind.
 //
 // Each block folds into the pairwise total against the s built from the blocks
 // before it, so that sum is formed a pair at a time rather than as the textbook
@@ -109,6 +119,7 @@ real_t AccumulateChained(RowRef row,
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
   const index_t step = kChains * Vec<N>::Lanes();
   const index_t unrolled_end = aligned_k - aligned_k % step;
+  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> total[kChains];
   for (int c = 0; c < kChains; ++c) {
     total[c] = Vec<N>::Zero();
@@ -118,7 +129,7 @@ real_t AccumulateChained(RowRef row,
     // To avoid unseen feature in Prediction
     if (j1 >= lay.num_feat) continue;
     real_t* w = model.GetParameter_v() + j1 * lay.align0;
-    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * sqrt_norm);
     auto fold = [&](int chain, index_t d) {
       Vec<N> x = Vec<N>::Load(w+d) * val;
       Vec<N> old_s = Vec<N>::Load(s+d);
@@ -211,6 +222,7 @@ void LatentSgdAt(RowRef row,
                  real_t learning_rate,
                  real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
+  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> lr = Vec<N>::Broadcast(learning_rate);
   Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
@@ -219,7 +231,7 @@ void LatentSgdAt(RowRef row,
     // To avoid unseen feature
     if (j1 >= lay.num_feat) continue;
     real_t* w = model.GetParameter_v() + j1 * lay.align0;
-    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * sqrt_norm);
     Vec<N> pgv = pg_all * val;
     for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
       Vec<N> sum = Vec<N>::Load(s+d);
@@ -240,6 +252,7 @@ void LatentAdagradAt(RowRef row,
                      real_t learning_rate,
                      real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
+  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> lr = Vec<N>::Broadcast(learning_rate);
   Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
@@ -248,7 +261,7 @@ void LatentAdagradAt(RowRef row,
     // To avoid unseen feature
     if (j1 >= lay.num_feat) continue;
     real_t* w = model.GetParameter_v() + j1 * lay.align0;
-    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * sqrt_norm);
     Vec<N> pgv = pg_all * val;
     for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
       Vec<N> sum = Vec<N>::Load(s+d);
@@ -274,6 +287,7 @@ void LatentFtrlAt(RowRef row,
                   real_t lambda_1_val,
                   real_t lambda_2_val) {
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
+  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> inv_alpha = Vec<N>::Broadcast(inv_alpha_val);
   Vec<N> beta = Vec<N>::Broadcast(beta_val);
@@ -284,7 +298,7 @@ void LatentFtrlAt(RowRef row,
     // To avoid unseen feature
     if (j1 >= lay.num_feat) continue;
     real_t* w_base = model.GetParameter_v() + j1 * lay.align0;
-    Vec<N> val = Vec<N>::Broadcast(row.val(n) * norm);
+    Vec<N> val = Vec<N>::Broadcast(row.val(n) * sqrt_norm);
     Vec<N> pgv = pg_all * val;
     for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
       real_t* w = w_base + d;
@@ -294,7 +308,9 @@ void LatentFtrlAt(RowRef row,
       Vec<N> weight = Vec<N>::Load(w);
       Vec<N> weight_grad = Vec<N>::Load(wg);
       Vec<N> z_val = Vec<N>::Load(z);
-      Vec<N> grad = MulAdd(l2, weight, pgv * NegMulAdd(weight, val, sum));
+      // The loss gradient alone; l2 is the proximal term in the denominator
+      // below, and adding it here as well would apply it twice.
+      Vec<N> grad = pgv * NegMulAdd(weight, val, sum);
       Vec<N> grad_sq = grad * grad;
       Vec<N> sigma = (Sqrt(weight_grad + grad_sq)
                       - Sqrt(weight_grad)) * inv_alpha;
