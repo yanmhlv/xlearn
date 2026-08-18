@@ -235,6 +235,50 @@ TEST(MODEL_TEST, Save_replaces_an_existing_file) {
   RemoveFile(hyper_param.model_file.c_str());
 }
 
+TEST(MODEL_TEST, Load_refuses_a_checkpoint_from_an_older_format_version) {
+  HyperParam hyper_param = Init();
+  Model model;
+  model.Initialize(hyper_param.score_func,
+                    hyper_param.loss_func,
+                    hyper_param.num_feature,
+                    hyper_param.num_field,
+                    hyper_param.num_K,
+                    hyper_param.auxiliary_size);
+  model.Serialize(hyper_param.model_file);
+
+  FILE* file = OpenFileOrDie(hyper_param.model_file.c_str(), "r+b");
+  uint32 stale = kModelVersion - 1;
+  ASSERT_EQ(fseek(file, sizeof(kModelMagic), SEEK_SET), 0);
+  WriteDataToDisk(file, (char*)&stale, sizeof(stale));
+  Close(file);
+
+  Model loaded;
+  EXPECT_FALSE(loaded.Deserialize(hyper_param.model_file));
+  RemoveFile(hyper_param.model_file.c_str());
+}
+
+TEST(MODEL_TEST, Load_refuses_a_file_that_is_not_a_checkpoint) {
+  HyperParam hyper_param = Init();
+  Model model;
+  model.Initialize(hyper_param.score_func,
+                    hyper_param.loss_func,
+                    hyper_param.num_feature,
+                    hyper_param.num_field,
+                    hyper_param.num_K,
+                    hyper_param.auxiliary_size);
+  model.Serialize(hyper_param.model_file);
+
+  FILE* file = OpenFileOrDie(hyper_param.model_file.c_str(), "r+b");
+  uint64 not_magic = ~kModelMagic;
+  ASSERT_EQ(fseek(file, 0, SEEK_SET), 0);
+  WriteDataToDisk(file, (char*)&not_magic, sizeof(not_magic));
+  Close(file);
+
+  Model loaded;
+  EXPECT_FALSE(loaded.Deserialize(hyper_param.model_file));
+  RemoveFile(hyper_param.model_file.c_str());
+}
+
 TEST(MODEL_TEST, SerializeToTXT) {
   HyperParam hyper_param = Init();
   // linear

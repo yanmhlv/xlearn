@@ -98,8 +98,12 @@ namespace xLearn {
 const uint64 kModelMagic = 0x4C444D5F4E52584CULL;  // "LXRN_MDL" on disk
 
 // Bump on any change to how the blobs below the header are arranged -- their
-// order, the layout within param_v_, what aux_size_ planes mean.
-const uint32 kModelVersion = 1;
+// order, the layout within param_v_, what aux_size_ planes mean -- and on any
+// change to what the stored numbers mean under an unchanged layout. A weight
+// trained against a differently scaled objective loads with nothing to fail
+// on and scores differently than it did when it was validated, which is the
+// same silent wrongness the layout case produces and wants the same refusal.
+const uint32 kModelVersion = 2;
 
 class Model {
  public:
