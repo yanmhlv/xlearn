@@ -279,7 +279,7 @@ inline void RenameFileOrDie(const std::string &from, const std::string &to) {
 
 // The name a file is written under before RenameFileOrDie() publishes it.
 inline std::string PendingName(const std::string &filename) {
-  return filename + ".tmp";
+  return StringPrintf("%s.%d.tmp", filename.c_str(), (int)getpid());
 }
 
 // Format the file size by GB, MB, and KB

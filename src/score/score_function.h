@@ -173,8 +173,8 @@ class Score {
   // adding lambda_2 * weight here as well applies it twice: with no loss
   // gradient at all, a nonzero weight would move n and z as though an example
   // had arrived, and then be penalized again on the way out.
-  void ftrl_linear_grad(RowRef row, Model& model, real_t pg, real_t norm) {
-    real_t sqrt_norm = std::sqrt(norm);
+  void ftrl_linear_grad(RowRef row, Model& model, real_t pg,
+                        real_t sqrt_norm) {
     real_t* w = model.GetParameter_w();
     index_t num_feat = model.GetNumFeature();
     for (index_t n = 0; n < row.len; ++n) {

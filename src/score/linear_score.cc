@@ -139,7 +139,7 @@ void LinearScore::calc_grad_ftrl(RowRef row,
                                  Model& model,
                                  real_t pg,
                                  real_t norm) {
-  this->ftrl_linear_grad(row, model, pg, norm);
+  this->ftrl_linear_grad(row, model, pg, std::sqrt(norm));
 }
 
 } // namespace xLearn

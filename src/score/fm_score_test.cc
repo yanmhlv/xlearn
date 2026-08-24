@@ -276,25 +276,20 @@ TEST(FMScoreTest, calc_grad_ftrl_zero_pg_moves_nothing) {
     std::string opt_type("ftrl");
     // No l1 band, and an l2 large enough that a doubled one is unmissable.
     score.Initialize(0.1, 0, 0.3, 1.0, 0, 0.5, opt_type);
-    score.CalcGrad(buf, model, 0.0);
 
     index_t k_aligned = model.get_aligned_k();
     real_t* v = model.GetParameter_v();
     real_t* w = model.GetParameter_w();
-    for (index_t j = 0; j < model.GetNumFeature(); ++j) {
-      for (index_t d = 0; d < k_aligned; ++d) {
-        EXPECT_FLOAT_EQ(v[j*k_aligned*3 + d], 0.0);
-      }
-    }
-    for (index_t i = 0; i < model.GetNumParameter_w(); i += 3) {
-      EXPECT_FLOAT_EQ(w[i], 0.0);
-    }
-
     // And having settled with no gradient, another empty step is a no-op.
-    score.CalcGrad(buf, model, 0.0);
-    for (index_t j = 0; j < model.GetNumFeature(); ++j) {
-      for (index_t d = 0; d < k_aligned; ++d) {
-        EXPECT_FLOAT_EQ(v[j*k_aligned*3 + d], 0.0);
+    for (int step = 0; step < 2; ++step) {
+      score.CalcGrad(buf, model, 0.0);
+      for (index_t j = 0; j < model.GetNumFeature(); ++j) {
+        for (index_t d = 0; d < k_aligned; ++d) {
+          EXPECT_FLOAT_EQ(v[j*k_aligned*3 + d], 0.0);
+        }
+      }
+      for (index_t i = 0; i < model.GetNumParameter_w(); i += 3) {
+        EXPECT_FLOAT_EQ(w[i], 0.0);
       }
     }
   }

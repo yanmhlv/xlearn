@@ -528,7 +528,7 @@ void FFMScore::calc_grad_ftrl(RowRef row,
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/
-  this->ftrl_linear_grad(row, model, pg, norm);
+  this->ftrl_linear_grad(row, model, pg, std::sqrt(norm));
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
