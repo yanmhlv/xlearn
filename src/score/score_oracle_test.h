@@ -39,18 +39,36 @@ inline Row MakeRow(index_t num_feat, index_t num_field, unsigned seed) {
   return row;
 }
 
+// Distinct values everywhere a correct kernel reads, so that pairing the wrong
+// two blocks changes the answer.
+//
+// The gradient cache planes are the exception: adagrad accumulates squares
+// there and then takes their square root, so a negative one is not a state any
+// run can reach -- seeding it with one produces nan on both sides of a
+// comparison and tests nothing. They start at a positive magnitude instead,
+// which is what an epoch of updates would have left. Which planes those are
+// depends on the optimizer, hence aux_size: plane 0 of each block holds the
+// weight, the rest hold optimizer state.
 inline void FillDistinct(Model& model, unsigned seed) {
   std::mt19937 gen(seed);
   std::uniform_real_distribution<real_t> value(-0.5, 0.5);
+  std::uniform_real_distribution<real_t> cache(0.1, 1.0);
+  const index_t aux = model.GetAuxiliarySize();
+
   real_t* w = model.GetParameter_w();
   for (index_t i = 0; i < model.GetNumParameter_w(); ++i) {
-    w[i] = value(gen);
+    w[i] = (i % aux == 0) ? value(gen) : cache(gen);
   }
   real_t* v = model.GetParameter_v();
+  const index_t aligned_k = model.get_aligned_k();
   for (index_t i = 0; i < model.GetNumParameter_v(); ++i) {
-    v[i] = value(gen);
+    const index_t plane = aligned_k ? (i / aligned_k) % aux : 0;
+    v[i] = (plane == 0) ? value(gen) : cache(gen);
   }
   model.GetParameter_b()[0] = value(gen);
+  for (index_t i = 1; i < aux; ++i) {
+    model.GetParameter_b()[i] = cache(gen);
+  }
 }
 
 // The padding between num_K and aligned_k is never read by a correct kernel,
@@ -151,6 +169,61 @@ inline double FMScoreOf(const Row& row, Model& model, double norm) {
 // tolerance with the work rather than asserting a fixed epsilon.
 inline double Tolerance(double magnitude, index_t terms) {
   return 1e-5 * terms + 1e-4 * std::fabs(magnitude);
+}
+
+// The latent adagrad update divides by RSqrt(), which is Highway's
+// ApproximateReciprocalSqrt -- roughly 12 bits, and how many exactly is the
+// hardware's business. An exact oracle therefore cannot be held to float
+// epsilon on a latent weight, so latent comparisons take a relative band wide
+// enough for that approximation and nothing wider. The linear term divides by
+// an exact 1/sqrt and is held to Tolerance() above.
+inline double ApproxRSqrtTolerance(double want) {
+  return 2e-3 * std::fabs(want) + 1e-6;
+}
+
+// One adagrad step over a weight and its gradient cache, exactly as the scalar
+// linear path performs it: cache += g*g, then w -= lr * g / sqrt(cache).
+inline void AdagradStep(double* weight, double* cache, double g,
+                        double learning_rate) {
+  *cache += g * g;
+  *weight -= learning_rate * g / std::sqrt(*cache);
+}
+
+// The Linear Term and Bias after one adagrad update, written from the rule
+// rather than from the kernel. Returns weight/cache pairs indexed by feature.
+struct LinearState {
+  std::vector<double> weight;
+  std::vector<double> cache;
+  double bias = 0.0;
+  double bias_cache = 0.0;
+};
+
+inline LinearState AdagradLinear(const Row& row, Model& model, double pg,
+                                 double norm, double learning_rate,
+                                 double regu_lambda) {
+  const double sqrt_norm = std::sqrt(norm);
+  const index_t aux = model.GetAuxiliarySize();
+  const index_t num_feat = model.GetNumFeature();
+  const real_t* w = model.GetParameter_w();
+
+  LinearState out;
+  out.weight.resize(num_feat);
+  out.cache.resize(num_feat);
+  for (index_t i = 0; i < num_feat; ++i) {
+    out.weight[i] = w[i * aux];
+    out.cache[i] = w[i * aux + 1];
+  }
+  out.bias = model.GetParameter_b()[0];
+  out.bias_cache = model.GetParameter_b()[1];
+
+  for (const Node& n : row.nodes) {
+    if (n.feat >= num_feat) continue;
+    const double g = regu_lambda * out.weight[n.feat] +
+                     pg * double(n.val) * sqrt_norm;
+    AdagradStep(&out.weight[n.feat], &out.cache[n.feat], g, learning_rate);
+  }
+  AdagradStep(&out.bias, &out.bias_cache, pg, learning_rate);
+  return out;
 }
 
 }  // namespace oracle

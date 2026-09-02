@@ -26,6 +26,7 @@ This file tests the LinearScore class.
 
 #include "src/score/score_function.h"
 #include "src/score/linear_score.h"
+#include "src/score/score_oracle_test.h"
 
 namespace xLearn {
 
@@ -120,6 +121,38 @@ TEST_F(LinearScoreTest, calc_grad_ftrl_zero_pg_moves_nothing) {
     EXPECT_FLOAT_EQ(w[i], 0.0);
   }
   EXPECT_FLOAT_EQ(model.GetParameter_b()[0], 0.0);
+}
+
+// AdaGrad is the default optimizer and had no gradient test in any model
+// family. The Linear Term is checked here, where no latent term can absorb an
+// error in it: the cache and the weight must both land where an independent
+// scalar step puts them.
+TEST_F(LinearScoreTest, calc_grad_adagrad_matches_scalar_oracle) {
+  const real_t kNorm = 0.25;
+  const real_t kLearningRate = 0.1;
+  const real_t kReguLambda = 0.02;
+  const real_t kPg = 1.5;
+  Model model;
+  model.Initialize("linear", "squared", kLength, 0, 0, 2);
+  oracle::FillDistinct(model, 7);
+  oracle::Row row = oracle::MakeRow(kLength, 1, 77);
+
+  oracle::LinearState want = oracle::AdagradLinear(
+      row, model, kPg, kNorm, kLearningRate, kReguLambda);
+
+  LinearScore score;
+  std::string opt_type("adagrad");
+  score.Initialize(kLearningRate, kReguLambda, 0.3, 1.0, 0, 0, opt_type);
+  RowBuffer buf = row.Buffer();
+  score.CalcGrad(buf, model, kPg, kNorm);
+
+  const real_t* w = model.GetParameter_w();
+  for (index_t i = 0; i < kLength; ++i) {
+    EXPECT_NEAR(w[i*2], want.weight[i], 1e-5) << "weight " << i;
+    EXPECT_NEAR(w[i*2+1], want.cache[i], 1e-5) << "cache " << i;
+  }
+  EXPECT_NEAR(model.GetParameter_b()[0], want.bias, 1e-5);
+  EXPECT_NEAR(model.GetParameter_b()[1], want.bias_cache, 1e-5);
 }
 
 } // namespace xLearn

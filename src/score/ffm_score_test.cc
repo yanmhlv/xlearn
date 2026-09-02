@@ -267,4 +267,55 @@ TEST(FFMScore_Test, calc_score_matches_scalar_oracle) {
   }
 }
 
+namespace {
+
+real_t HalfOfPred(real_t pred, void* context, real_t* loss) {
+  *loss = pred;
+  return pred * 0.5;
+}
+
+} // namespace
+
+// FFM is the family that answers yes to PrefersFusedStep(), so Step() is the
+// path a real epoch takes and the split path below is the one every other test
+// here exercises. Run at adagrad, which is the default optimizer and touches
+// the gradient cache the fused path reuses.
+TEST(FFMScore_Test, step_matches_split_path) {
+  const index_t kNumFeat = 6;
+  const index_t kNumField = 3;
+  const real_t kNorm = 0.25;
+  for (index_t k = 1; k < 40; ++k) {
+    Model fused;
+    Model split;
+    fused.Initialize("ffm", "squared", kNumFeat, kNumField, k, 2);
+    split.Initialize("ffm", "squared", kNumFeat, kNumField, k, 2);
+    oracle::FillDistinct(fused, k);
+    oracle::FillDistinct(split, k);
+    oracle::Row row = oracle::MakeRow(kNumFeat, kNumField, k + 3000);
+    RowBuffer buf = row.Buffer();
+
+    FFMScore score;
+    std::string opt_type("adagrad");
+    score.Initialize(0.1, 0.02, 0.3, 1.0, 0, 0, opt_type);
+    EXPECT_TRUE(score.PrefersFusedStep());
+
+    real_t loss = 0;
+    real_t fused_loss = score.Step(buf, fused, kNorm, HalfOfPred, nullptr);
+    real_t pred = score.CalcScore(buf, split, kNorm);
+    score.CalcGrad(buf, split, HalfOfPred(pred, nullptr, &loss), kNorm);
+
+    EXPECT_FLOAT_EQ(fused_loss, loss) << "k=" << k;
+    real_t* vf = fused.GetParameter_v();
+    real_t* vs = split.GetParameter_v();
+    for (index_t i = 0; i < fused.GetNumParameter_v(); ++i) {
+      EXPECT_FLOAT_EQ(vf[i], vs[i]) << "latent " << i << " k=" << k;
+    }
+    real_t* wf = fused.GetParameter_w();
+    real_t* ws = split.GetParameter_w();
+    for (index_t i = 0; i < fused.GetNumParameter_w(); ++i) {
+      EXPECT_FLOAT_EQ(wf[i], ws[i]) << "linear " << i << " k=" << k;
+    }
+  }
+}
+
 } // namespace xLearn
