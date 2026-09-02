@@ -23,6 +23,7 @@ FM score, FFM score, and etc.
 #define XLEARN_LOSS_SCORE_FUNCTION_H_
 
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "src/base/common.h"
@@ -45,19 +46,61 @@ namespace xLearn {
 //
 // In general, the CalcGrad() will be used in loss function.
 //------------------------------------------------------------------------------
+// Which optimizer CalcGrad dispatches to. Resolved once in Initialize:
+// matching the name on every row costs a string compare per example.
+enum class OptType {
+  kSgd,
+  kAdaGrad,
+  kFtrl
+};
+
+// The registered optimizer names. Checker validates against these before a
+// run starts, so an unrecognised one here is a bug rather than bad input.
+inline OptType OptTypeOf(const std::string& opt_type) {
+  if (opt_type.compare("sgd") == 0) return OptType::kSgd;
+  if (opt_type.compare("adagrad") == 0) return OptType::kAdaGrad;
+  if (opt_type.compare("ftrl") == 0) return OptType::kFtrl;
+  LOG(FATAL) << "Unknow optimization method: " << opt_type;
+  return OptType::kSgd;
+}
+
+// How many planes each optimizer keeps per weight: the weight itself, plus
+// whatever state the update rule carries beside it. sgd keeps none, adagrad
+// keeps the accumulated squared gradient, ftrl adds the dual accumulator.
+//
+// This is the one place that mapping is written. It decides the size of every
+// parameter array a run allocates and the stride every kernel indexes by, so a
+// second copy that disagreed would not fail to compile -- it would read each
+// weight at the wrong offset and train.
+inline index_t AuxiliarySizeFor(OptType opt) {
+  switch (opt) {
+    case OptType::kSgd: return 1;
+    case OptType::kAdaGrad: return 2;
+    case OptType::kFtrl: return 3;
+  }
+  return 0;
+}
+
 class Score {
  public:
-  // Which optimizer CalcGrad dispatches to. Resolved once in Initialize:
-  // matching the name on every row costs a string compare per example.
-  enum class OptType {
-    kSgd,
-    kAdaGrad,
-    kFtrl
-  };
+  using OptType = xLearn::OptType;
 
   // Constructor and Destructor
   Score() { }
   virtual ~Score() { }
+
+  // A model carries its gradient cache, so the number of planes per weight is
+  // baked into every checkpoint. The optimizer that chose that number is not:
+  // -pre takes the layout from the file while -p still comes from the command
+  // line, so the two arrive by different routes and nothing else compares
+  // them. Reading a 3-plane ftrl checkpoint as sgd indexes every weight at the
+  // wrong stride, and the run trains and writes a model rather than failing.
+  // Empty when the model's layout is one this optimizer produces, and the
+  // reason it is not otherwise.
+  std::string ModelMismatch(Model& model) const;
+
+  // ModelMismatch as an assertion, for callers with nowhere to report to.
+  void CheckModel(Model& model) const;
 
   // Invoke this function before we use this class.
   virtual void Initialize(real_t learning_rate,
@@ -76,15 +119,7 @@ class Score {
     // Every ftrl step scales by 1/alpha. Dividing a vector by a scalar that
     // never changes keeps the divider busy for what one reciprocal settles.
     inv_alpha_ = 1.0 / alpha;
-    if (opt_type.compare("sgd") == 0) {
-      opt_ = OptType::kSgd;
-    } else if (opt_type.compare("adagrad") == 0) {
-      opt_ = OptType::kAdaGrad;
-    } else if (opt_type.compare("ftrl") == 0) {
-      opt_ = OptType::kFtrl;
-    } else {
-      LOG(FATAL) << "Unknow optimization method: " << opt_type;
-    }
+    opt_ = OptTypeOf(opt_type);
   }
 
   // Given one example and current model, this method
