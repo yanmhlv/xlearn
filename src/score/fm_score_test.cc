@@ -27,6 +27,7 @@ This file tests the FMScore class.
 #include "src/data/hyper_parameters.h"
 #include "src/score/score_function.h"
 #include "src/score/fm_score.h"
+#include "src/score/score_oracle_test.h"
 
 namespace xLearn {
 
@@ -342,6 +343,28 @@ TEST(FMScoreTest, step_matches_split_path) {
     for (index_t i = 0; i < fused.GetNumParameter_w(); ++i) {
       EXPECT_FLOAT_EQ(wf[i], ws[i]);
     }
+  }
+}
+
+// The fixtures above give every feature the same latent block, so a kernel
+// that paired the wrong two features would score identically. Distinct blocks
+// and an independent scalar sum in double separate them.
+TEST(FMScoreTest, calc_score_matches_scalar_oracle) {
+  const index_t kNumFeat = 6;
+  const real_t kNorm = 0.25;
+  for (index_t k = 1; k < 40; ++k) {
+    Model model;
+    model.Initialize("fm", "squared", kNumFeat, 1, k, 3);
+    oracle::FillDistinct(model, k);
+    oracle::ZeroLatentPadding(model);
+    oracle::Row row = oracle::MakeRow(kNumFeat, 1, k + 2000);
+    RowBuffer buf = row.Buffer();
+
+    FMScore score;
+    real_t got = score.CalcScore(buf, model, kNorm);
+    double want = oracle::FMScoreOf(row, model, kNorm);
+    EXPECT_NEAR(got, want, oracle::Tolerance(want, k * kNumFeat * kNumFeat))
+        << "k=" << k;
   }
 }
 

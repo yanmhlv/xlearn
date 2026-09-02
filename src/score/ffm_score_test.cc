@@ -27,6 +27,7 @@ This file tests the FFMScore class.
 #include "src/data/hyper_parameters.h"
 #include "src/score/score_function.h"
 #include "src/score/ffm_score.h"
+#include "src/score/score_oracle_test.h"
 
 namespace xLearn {
 
@@ -239,6 +240,30 @@ TEST(FFMScore_Test, calc_grad_ftrl_zero_pg_moves_nothing) {
     for (index_t i = 0; i < model.GetNumParameter_w(); i += 3) {
       EXPECT_FLOAT_EQ(w[i], 0.0);
     }
+  }
+}
+
+// The fixtures above give every latent coordinate the same value, which makes
+// v[j1][f2], v[j2][f1] and v[j1][f1] indistinguishable -- a wrong field offset
+// scores identically to a right one. Distinct coordinates and an independent
+// scalar sum in double are what separate them.
+TEST(FFMScore_Test, calc_score_matches_scalar_oracle) {
+  const index_t kNumFeat = 6;
+  const index_t kNumField = 3;
+  const real_t kNorm = 0.25;
+  for (index_t k = 1; k < 40; ++k) {
+    Model model;
+    model.Initialize("ffm", "squared", kNumFeat, kNumField, k, 3);
+    oracle::FillDistinct(model, k);
+    oracle::ZeroLatentPadding(model);
+    oracle::Row row = oracle::MakeRow(kNumFeat, kNumField, k + 1000);
+    RowBuffer buf = row.Buffer();
+
+    FFMScore score;
+    real_t got = score.CalcScore(buf, model, kNorm);
+    double want = oracle::FFMScoreOf(row, model, kNorm);
+    EXPECT_NEAR(got, want, oracle::Tolerance(want, k * kNumFeat * kNumFeat))
+        << "k=" << k;
   }
 }
 
