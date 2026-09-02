@@ -830,6 +830,14 @@ CLASS_REGISTER_DEFINE_REGISTRY(xLearn_metric_registry, Metric);
       xLearn_metric_registry,                               \
       format_name)
 
+#define HAS_METRIC(format_name)                             \
+  CLASS_REGISTER_HAS_OBJECT(                                \
+      xLearn_metric_registry,                               \
+      format_name)
+
+#define METRIC_NAMES()                                      \
+  CLASS_REGISTER_OBJECT_NAMES(xLearn_metric_registry)
+
 }  // namespace xLearn
 
 #endif  // XLEARN_LOSS_METRIC_H_
