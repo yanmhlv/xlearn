@@ -26,7 +26,6 @@ This file defines the basic data structures.
 
 #include "src/base/common.h"
 #include "src/base/file_util.h"
-#include "src/base/stl-util.h"
 
 namespace xLearn {
 

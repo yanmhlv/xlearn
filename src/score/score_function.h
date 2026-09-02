@@ -28,6 +28,7 @@ FM score, FFM score, and etc.
 
 #include "src/base/common.h"
 #include "src/base/class_register.h"
+#include "src/base/math.h"
 #include "src/data/data_structure.h"
 #include "src/data/hyper_parameters.h"
 #include "src/data/model_parameters.h"
@@ -221,6 +222,49 @@ class Score {
     }
     // bias
     this->ftrl_update(model.GetParameter_b(), pg);
+  }
+
+  void sgd_linear_grad(RowRef row, Model& model, real_t pg,
+                       real_t sqrt_norm) {
+    real_t* w = model.GetParameter_w();
+    index_t num_feat = model.GetNumFeature();
+    for (index_t n = 0; n < row.len; ++n) {
+      index_t feat_id = row.feat(n);
+      // To avoid unseen feature
+      if (feat_id >= num_feat) continue;
+      real_t &wl = w[feat_id];
+      real_t g = regu_lambda_ * wl + pg * row.val(n) * sqrt_norm;
+      wl -= learning_rate_ * g;
+    }
+    // bias
+    real_t &wb = model.GetParameter_b()[0];
+    wb -= learning_rate_ * pg;
+  }
+
+  void adagrad_linear_grad(RowRef row, Model& model, real_t pg,
+                           real_t sqrt_norm) {
+    real_t* w = model.GetParameter_w();
+    index_t num_feat = model.GetNumFeature();
+    for (index_t n = 0; n < row.len; ++n) {
+      index_t feat_id = row.feat(n);
+      // To avoid unseen feature
+      if (feat_id >= num_feat) continue;
+      real_t &wl = w[feat_id*2];
+      real_t &wlg = w[feat_id*2+1];
+      real_t g = regu_lambda_ * wl + pg * row.val(n) * sqrt_norm;
+      // Hold the updated cache in a register: writing it to w[] and reading it
+      // straight back puts a store-to-load round trip on the critical path,
+      // ahead of a square root that is already the longest link in it.
+      real_t cache = wlg + g*g;
+      wlg = cache;
+      wl -= learning_rate_ * g * InvSqrt(cache);
+    }
+    // bias
+    real_t* b = model.GetParameter_b();
+    real_t &wb = b[0];
+    real_t &wbg = b[1];
+    wbg += pg * pg;
+    wb -= learning_rate_ * pg * InvSqrt(wbg);
   }
 
   real_t learning_rate_;

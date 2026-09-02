@@ -33,11 +33,11 @@ This file contains facilitlies to control the file.
 #endif
 #include <fcntl.h>
 #include <string.h>
+#include <memory>
 
 
 #include "src/base/common.h"
 #include "src/base/stringprintf.h"
-#include "src/base/scoped_ptr.h"
 
 //------------------------------------------------------------------------------
 // Useage:
@@ -176,7 +176,7 @@ inline uint64 GetFileSize(FILE *file) {
 // Get one line of data from file by given a file pointer
 inline void GetLine(FILE *file, std::string &str_line) {
   CHECK_NOTNULL(file);
-  scoped_array<char> line(new char[kMaxLineSize]);
+  std::unique_ptr<char[]> line(new char[kMaxLineSize]);
   CHECK_NOTNULL(fgets(line.get(), kMaxLineSize, file));
   int read_len = strlen(line.get());
   if (line[read_len-1] != '\n') {

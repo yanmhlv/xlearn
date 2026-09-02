@@ -506,21 +506,7 @@ void FMScore::calc_grad_sgd(RowRef row,
    *  linear term and bias term                            *
    *********************************************************/  
   real_t sqrt_norm = std::sqrt(norm);
-  real_t *w = model.GetParameter_w();
-  index_t num_feat = model.GetNumFeature();
-  for (index_t n = 0; n < row.len; ++n) {
-    index_t feat_id = row.feat(n);
-    // To avoid unseen feature
-    if (feat_id >= num_feat) continue;
-    real_t &wl = w[feat_id];
-    real_t g = regu_lambda_*wl+pg*row.val(n)*sqrt_norm;
-    wl -= learning_rate_ * g;
-  }
-  // bias
-  w = model.GetParameter_b();
-  real_t &wb = w[0];
-  real_t g = pg;
-  wb -= learning_rate_ * g;
+  this->sgd_linear_grad(row, model, pg, sqrt_norm);
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
@@ -544,26 +530,7 @@ void FMScore::calc_grad_adagrad(RowRef row,
    *  linear term and bias term                            *
    *********************************************************/
   real_t sqrt_norm = std::sqrt(norm);
-  real_t *w = model.GetParameter_w();
-  index_t num_feat = model.GetNumFeature();
-  for (index_t n = 0; n < row.len; ++n) {
-    index_t feat_id = row.feat(n);
-    // To avoid unseen feature
-    if (feat_id >= num_feat) continue;
-    real_t &wl = w[feat_id*2];
-    real_t &wlg = w[feat_id*2+1];
-    real_t g = regu_lambda_*wl+pg*row.val(n)*sqrt_norm;
-    real_t cache = wlg + g*g;
-    wlg = cache;
-    wl -= learning_rate_ * g * InvSqrt(cache);
-  }
-  // bias
-  w = model.GetParameter_b();
-  real_t &wb = w[0];
-  real_t &wbg = w[1];
-  real_t g = pg;
-  wbg += g*g;
-  wb -= learning_rate_ * g * InvSqrt(wbg);
+  this->adagrad_linear_grad(row, model, pg, sqrt_norm);
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
