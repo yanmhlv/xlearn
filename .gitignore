@@ -51,3 +51,5 @@ CMakeUserPresets.json
 *.Rhistory
 *.tar.gz
 xlearn/*
+
+.task/
