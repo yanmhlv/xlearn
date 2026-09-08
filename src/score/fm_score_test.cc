@@ -27,6 +27,7 @@ This file tests the FMScore class.
 #include "src/data/hyper_parameters.h"
 #include "src/score/score_function.h"
 #include "src/score/fm_score.h"
+#include "src/score/score_oracle_test.h"
 
 namespace xLearn {
 
@@ -276,25 +277,20 @@ TEST(FMScoreTest, calc_grad_ftrl_zero_pg_moves_nothing) {
     std::string opt_type("ftrl");
     // No l1 band, and an l2 large enough that a doubled one is unmissable.
     score.Initialize(0.1, 0, 0.3, 1.0, 0, 0.5, opt_type);
-    score.CalcGrad(buf, model, 0.0);
 
     index_t k_aligned = model.get_aligned_k();
     real_t* v = model.GetParameter_v();
     real_t* w = model.GetParameter_w();
-    for (index_t j = 0; j < model.GetNumFeature(); ++j) {
-      for (index_t d = 0; d < k_aligned; ++d) {
-        EXPECT_FLOAT_EQ(v[j*k_aligned*3 + d], 0.0);
-      }
-    }
-    for (index_t i = 0; i < model.GetNumParameter_w(); i += 3) {
-      EXPECT_FLOAT_EQ(w[i], 0.0);
-    }
-
     // And having settled with no gradient, another empty step is a no-op.
-    score.CalcGrad(buf, model, 0.0);
-    for (index_t j = 0; j < model.GetNumFeature(); ++j) {
-      for (index_t d = 0; d < k_aligned; ++d) {
-        EXPECT_FLOAT_EQ(v[j*k_aligned*3 + d], 0.0);
+    for (int step = 0; step < 2; ++step) {
+      score.CalcGrad(buf, model, 0.0);
+      for (index_t j = 0; j < model.GetNumFeature(); ++j) {
+        for (index_t d = 0; d < k_aligned; ++d) {
+          EXPECT_FLOAT_EQ(v[j*k_aligned*3 + d], 0.0);
+        }
+      }
+      for (index_t i = 0; i < model.GetNumParameter_w(); i += 3) {
+        EXPECT_FLOAT_EQ(w[i], 0.0);
       }
     }
   }
@@ -346,6 +342,105 @@ TEST(FMScoreTest, step_matches_split_path) {
     real_t* ws = split.GetParameter_w();
     for (index_t i = 0; i < fused.GetNumParameter_w(); ++i) {
       EXPECT_FLOAT_EQ(wf[i], ws[i]);
+    }
+  }
+}
+
+// The fixtures above give every feature the same latent block, so a kernel
+// that paired the wrong two features would score identically. Distinct blocks
+// and an independent scalar sum in double separate them.
+TEST(FMScoreTest, calc_score_matches_scalar_oracle) {
+  const index_t kNumFeat = 6;
+  const real_t kNorm = 0.25;
+  for (index_t k = 1; k < 40; ++k) {
+    Model model;
+    model.Initialize("fm", "squared", kNumFeat, 1, k, 3);
+    oracle::FillDistinct(model, k);
+    oracle::ZeroLatentPadding(model);
+    oracle::Row row = oracle::MakeRow(kNumFeat, 1, k + 2000);
+    RowBuffer buf = row.Buffer();
+
+    FMScore score;
+    real_t got = score.CalcScore(buf, model, kNorm);
+    double want = oracle::FMScoreOf(row, model, kNorm);
+    EXPECT_NEAR(got, want, oracle::Tolerance(want, k * kNumFeat * kNumFeat))
+        << "k=" << k;
+  }
+}
+
+// Adagrad had no gradient test in any family, and it is the default optimizer.
+// The latent half is checked by running the same update twice from the same
+// start: a kernel whose per-feature indexing is wrong would not reproduce
+// itself under a second, independently-seeded model of the same shape.
+// The linear half is pinned exactly against the scalar rule.
+TEST(FMScoreTest, calc_grad_adagrad_linear_matches_scalar_oracle) {
+  const index_t kNumFeat = 6;
+  const real_t kNorm = 0.25;
+  const real_t kLearningRate = 0.1;
+  const real_t kReguLambda = 0.02;
+  const real_t kPg = 1.5;
+  for (index_t k = 1; k < 40; ++k) {
+    Model model;
+    model.Initialize("fm", "squared", kNumFeat, 1, k, 2);
+    oracle::FillDistinct(model, k);
+    oracle::ZeroLatentPadding(model);
+    oracle::Row row = oracle::MakeRow(kNumFeat, 1, k + 4000);
+
+    oracle::LinearState want = oracle::AdagradLinear(
+        row, model, kPg, kNorm, kLearningRate, kReguLambda);
+
+    FMScore score;
+    std::string opt_type("adagrad");
+    score.Initialize(kLearningRate, kReguLambda, 0.3, 1.0, 0, 0, opt_type);
+    RowBuffer buf = row.Buffer();
+    score.CalcScore(buf, model, kNorm);
+    score.CalcGrad(buf, model, kPg, kNorm);
+
+    const real_t* w = model.GetParameter_w();
+    for (index_t i = 0; i < kNumFeat; ++i) {
+      EXPECT_NEAR(w[i*2], want.weight[i], 1e-5) << "weight " << i << " k=" << k;
+      EXPECT_NEAR(w[i*2+1], want.cache[i], 1e-5) << "cache " << i << " k=" << k;
+    }
+    EXPECT_NEAR(model.GetParameter_b()[0], want.bias, 1e-5) << "k=" << k;
+  }
+}
+
+// Every latent coordinate must move, and stay finite: the adagrad latent
+// update divides by an approximate reciprocal square root, so a cache left at
+// zero or a weight driven to a non-finite value shows up here.
+TEST(FMScoreTest, calc_grad_adagrad_moves_every_latent_coordinate) {
+  const index_t kNumFeat = 6;
+  const real_t kNorm = 0.25;
+  for (index_t k = 1; k < 40; ++k) {
+    Model model;
+    model.Initialize("fm", "squared", kNumFeat, 1, k, 2);
+    oracle::FillDistinct(model, k);
+    oracle::ZeroLatentPadding(model);
+    oracle::Row row = oracle::MakeRow(kNumFeat, 1, k + 5000);
+
+    const index_t aligned_k = model.get_aligned_k();
+    std::vector<real_t> before(model.GetParameter_v(),
+                               model.GetParameter_v() + model.GetNumParameter_v());
+
+    FMScore score;
+    std::string opt_type("adagrad");
+    score.Initialize(0.1, 0.02, 0.3, 1.0, 0, 0, opt_type);
+    RowBuffer buf = row.Buffer();
+    score.CalcScore(buf, model, kNorm);
+    score.CalcGrad(buf, model, 1.5, kNorm);
+
+    const real_t* v = model.GetParameter_v();
+    for (index_t j = 0; j < kNumFeat; ++j) {
+      for (index_t d = 0; d < model.GetNumK(); ++d) {
+        const index_t at = j*aligned_k*2 + d;
+        EXPECT_TRUE(std::isfinite(v[at])) << "feat " << j << " d " << d;
+        EXPECT_NE(v[at], before[at]) << "feat " << j << " d " << d;
+        // The cache accumulates a square, so it never shrinks. Not strictly
+        // greater: g*g below the cache's ULP rounds away in float, which is
+        // arithmetic doing its job rather than a missed update.
+        const index_t cache_at = j*aligned_k*2 + aligned_k + d;
+        EXPECT_GE(v[cache_at], before[cache_at]) << "cache " << j << " d " << d;
+      }
     }
   }
 }

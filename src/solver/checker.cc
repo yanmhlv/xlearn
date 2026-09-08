@@ -28,8 +28,52 @@ This file is the implementation of the Checker class.
 #include "src/solver/checker.h"
 #include "src/base/levenshtein_distance.h"
 #include "src/base/file_util.h"
+#include "src/loss/metric.h"
 
 namespace xLearn {
+
+namespace {
+
+const char* kOptTypes[] = {"sgd", "adagrad", "ftrl"};
+
+bool IsOptType(const std::string& opt_type) {
+  for (const char* name : kOptTypes) {
+    if (opt_type.compare(name) == 0) return true;
+  }
+  return false;
+}
+
+std::string OptTypeList() {
+  std::string list;
+  for (const char* name : kOptTypes) {
+    if (!list.empty()) list += ", ";
+    list += name;
+  }
+  return list;
+}
+
+bool IsMetric(const std::string& metric) {
+  return metric.compare("none") == 0 || HAS_METRIC(metric);
+}
+
+std::string MetricList(const std::string& separator) {
+  std::string list;
+  for (const std::string& name : METRIC_NAMES()) {
+    if (!list.empty()) list += separator;
+    list += name;
+  }
+  list += separator;
+  list += "none";
+  return list;
+}
+
+void CanonicalizeMetric(std::string& metric) {
+  if (metric.compare("rmse") == 0) {
+    metric = "rmsd";
+  }
+}
+
+}  // namespace
 
 // Option help menu
 std::string Checker::option_help() const {
@@ -308,44 +352,27 @@ bool Checker::check_train_options(HyperParam& hyper_param) {
       }
       i += 2;
     } else if (list[i].compare("-x") == 0) {  // metrics
-      if (list[i+1].compare("acc") != 0 &&
-          list[i+1].compare("prec") != 0 &&
-          list[i+1].compare("recall") != 0 &&
-          list[i+1].compare("f1") != 0 &&
-          list[i+1].compare("auc") != 0 &&
-          list[i+1].compare("mae") != 0 &&
-          list[i+1].compare("mape") != 0 &&
-          list[i+1].compare("rmsd") != 0 &&
-          list[i+1].compare("rmse") != 0 &&
-          list[i+1].compare("none") != 0) {
+      std::string metric = list[i+1];
+      CanonicalizeMetric(metric);
+      if (!IsMetric(metric)) {
         Color::print_error(
           StringPrintf("Unknow metric: %s \n"
-               " -x can only be: \n"
-               "   acc \n"
-               "   prec \n" 
-               "   recall \n"
-               "   f1 \n"
-               "   auc\n"
-               "   mae \n"
-               "   mape \n"
-               "   rmsd \n"
-               "   rmse \n"
-               "   none",
-               list[i+1].c_str())
+               " -x can only be: \n   %s",
+               list[i+1].c_str(),
+               MetricList(" \n   ").c_str())
         );
         bo = false;
       } else {
-        hyper_param.metric = list[i+1];
+        hyper_param.metric = metric;
       }
       i += 2;
     } else if (list[i].compare("-p") == 0) {  // optimization method
-      if (list[i+1].compare("adagrad") != 0 &&
-          list[i+1].compare("ftrl") != 0 &&
-          list[i+1].compare("sgd") != 0) {
+      if (!IsOptType(list[i+1])) {
         Color::print_error(
           StringPrintf("Unknow optimization method: %s \n"
-               " -o can only be: adagrad and ftrl. \n",
-               list[i+1].c_str())
+               " -p can only be: %s. \n",
+               list[i+1].c_str(),
+               OptTypeList().c_str())
         );
         bo = false;
       } else {
@@ -592,9 +619,6 @@ bool Checker::check_train_options(HyperParam& hyper_param) {
   if (hyper_param.model_file.empty() && !hyper_param.cross_validation) {
     hyper_param.model_file = hyper_param.train_set_file + ".model";
   }
-  if (hyper_param.metric.compare("rmse") == 0) {
-    hyper_param.metric = "rmsd";
-  }
 
   return true;
 }
@@ -645,25 +669,15 @@ bool Checker::check_train_param(HyperParam& hyper_param) {
     );
     bo = false;
   }
-  if (hyper_param.metric.compare("acc") != 0 &&
-      hyper_param.metric.compare("prec") != 0 &&
-      hyper_param.metric.compare("recall") != 0 &&
-      hyper_param.metric.compare("f1") != 0 &&
-      hyper_param.metric.compare("auc") != 0 &&
-      hyper_param.metric.compare("mae") != 0 &&
-      hyper_param.metric.compare("mape") != 0 &&
-      hyper_param.metric.compare("rmsd") != 0 &&
-      hyper_param.metric.compare("rmse") != 0 &&
-      hyper_param.metric.compare("none") != 0) {
+  CanonicalizeMetric(hyper_param.metric);
+  if (!IsMetric(hyper_param.metric)) {
     Color::print_error(
       StringPrintf("Unknow evaluation metric: %s.",
         hyper_param.metric.c_str())
     );
     bo = false;
   }
-  if (hyper_param.opt_type.compare("sgd") != 0 &&
-      hyper_param.opt_type.compare("ftrl") != 0 &&
-      hyper_param.opt_type.compare("adagrad") != 0) {
+  if (!IsOptType(hyper_param.opt_type)) {
     Color::print_error(
       StringPrintf("Unknow optimization method: %s.",
         hyper_param.opt_type.c_str())
@@ -704,9 +718,6 @@ bool Checker::check_train_param(HyperParam& hyper_param) {
    *********************************************************/
   if (hyper_param.model_file.empty() && !hyper_param.cross_validation) {
     hyper_param.model_file = hyper_param.train_set_file + ".model";
-  }
-  if (hyper_param.metric.compare("rmse") == 0) {
-    hyper_param.metric = "rmsd";
   }
 
   return true;
@@ -780,8 +791,7 @@ void Checker::check_conflict_train(HyperParam& hyper_param) {
   } else if (hyper_param.loss_func.compare("cross-entropy") == 0) {
     if (hyper_param.metric.compare("mae") == 0 ||
         hyper_param.metric.compare("mape") == 0 ||
-        hyper_param.metric.compare("rmsd") == 0 ||
-        hyper_param.metric.compare("rmse") == 0) {
+        hyper_param.metric.compare("rmsd") == 0) {
       Color::print_warning(
         StringPrintf("The -x: %s metric can only be used "
                      "in regression tasks. xLearn will ignore "

@@ -92,6 +92,7 @@ string name and creating them later per the registered name.
 
 #include <map>
 #include <string>
+#include <vector>
 
 //------------------------------------------------------------------------------
 // The first parameter, register_name, should be unique globally.
@@ -120,6 +121,21 @@ string name and creating them later per the registered name.
    }                                                                         \
                                                                              \
    base_class_name* CreateObject(const std::string& entry_name);             \
+                                                                             \
+   bool HasObject(const std::string& entry_name) const {                     \
+     return m_creator_registry.count(entry_name) != 0;                       \
+   }                                                                         \
+                                                                             \
+   std::vector<std::string> ObjectNames() const {                            \
+     std::vector<std::string> names;                                         \
+     names.reserve(m_creator_registry.size());                               \
+     for (CreatorRegistry::const_iterator it =                               \
+              m_creator_registry.begin();                                    \
+          it != m_creator_registry.end(); ++it) {                            \
+       names.push_back(it->first);                                           \
+     }                                                                       \
+     return names;                                                           \
+   }                                                                         \
                                                                              \
    private:                                                                  \
    typedef std::map<std::string, Creator> CreatorRegistry;                   \
@@ -194,5 +210,11 @@ string name and creating them later per the registered name.
 
 #define CLASS_REGISTER_CREATE_OBJECT(register_name, entry_name_as_string)    \
   GetRegistry_##register_name().CreateObject(entry_name_as_string)
+
+#define CLASS_REGISTER_HAS_OBJECT(register_name, entry_name_as_string)       \
+  GetRegistry_##register_name().HasObject(entry_name_as_string)
+
+#define CLASS_REGISTER_OBJECT_NAMES(register_name)                           \
+  GetRegistry_##register_name().ObjectNames()
 
 #endif  // XLEARN_BASE_CLASS_REGISTER_H_

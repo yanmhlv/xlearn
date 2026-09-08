@@ -23,10 +23,12 @@ FM score, FFM score, and etc.
 #define XLEARN_LOSS_SCORE_FUNCTION_H_
 
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "src/base/common.h"
 #include "src/base/class_register.h"
+#include "src/base/math.h"
 #include "src/data/data_structure.h"
 #include "src/data/hyper_parameters.h"
 #include "src/data/model_parameters.h"
@@ -45,19 +47,61 @@ namespace xLearn {
 //
 // In general, the CalcGrad() will be used in loss function.
 //------------------------------------------------------------------------------
+// Which optimizer CalcGrad dispatches to. Resolved once in Initialize:
+// matching the name on every row costs a string compare per example.
+enum class OptType {
+  kSgd,
+  kAdaGrad,
+  kFtrl
+};
+
+// The registered optimizer names. Checker validates against these before a
+// run starts, so an unrecognised one here is a bug rather than bad input.
+inline OptType OptTypeOf(const std::string& opt_type) {
+  if (opt_type.compare("sgd") == 0) return OptType::kSgd;
+  if (opt_type.compare("adagrad") == 0) return OptType::kAdaGrad;
+  if (opt_type.compare("ftrl") == 0) return OptType::kFtrl;
+  LOG(FATAL) << "Unknow optimization method: " << opt_type;
+  return OptType::kSgd;
+}
+
+// How many planes each optimizer keeps per weight: the weight itself, plus
+// whatever state the update rule carries beside it. sgd keeps none, adagrad
+// keeps the accumulated squared gradient, ftrl adds the dual accumulator.
+//
+// This is the one place that mapping is written. It decides the size of every
+// parameter array a run allocates and the stride every kernel indexes by, so a
+// second copy that disagreed would not fail to compile -- it would read each
+// weight at the wrong offset and train.
+inline index_t AuxiliarySizeFor(OptType opt) {
+  switch (opt) {
+    case OptType::kSgd: return 1;
+    case OptType::kAdaGrad: return 2;
+    case OptType::kFtrl: return 3;
+  }
+  return 0;
+}
+
 class Score {
  public:
-  // Which optimizer CalcGrad dispatches to. Resolved once in Initialize:
-  // matching the name on every row costs a string compare per example.
-  enum class OptType {
-    kSgd,
-    kAdaGrad,
-    kFtrl
-  };
+  using OptType = xLearn::OptType;
 
   // Constructor and Destructor
   Score() { }
   virtual ~Score() { }
+
+  // A model carries its gradient cache, so the number of planes per weight is
+  // baked into every checkpoint. The optimizer that chose that number is not:
+  // -pre takes the layout from the file while -p still comes from the command
+  // line, so the two arrive by different routes and nothing else compares
+  // them. Reading a 3-plane ftrl checkpoint as sgd indexes every weight at the
+  // wrong stride, and the run trains and writes a model rather than failing.
+  // Empty when the model's layout is one this optimizer produces, and the
+  // reason it is not otherwise.
+  std::string ModelMismatch(Model& model) const;
+
+  // ModelMismatch as an assertion, for callers with nowhere to report to.
+  void CheckModel(Model& model) const;
 
   // Invoke this function before we use this class.
   virtual void Initialize(real_t learning_rate,
@@ -76,15 +120,7 @@ class Score {
     // Every ftrl step scales by 1/alpha. Dividing a vector by a scalar that
     // never changes keeps the divider busy for what one reciprocal settles.
     inv_alpha_ = 1.0 / alpha;
-    if (opt_type.compare("sgd") == 0) {
-      opt_ = OptType::kSgd;
-    } else if (opt_type.compare("adagrad") == 0) {
-      opt_ = OptType::kAdaGrad;
-    } else if (opt_type.compare("ftrl") == 0) {
-      opt_ = OptType::kFtrl;
-    } else {
-      LOG(FATAL) << "Unknow optimization method: " << opt_type;
-    }
+    opt_ = OptTypeOf(opt_type);
   }
 
   // Given one example and current model, this method
@@ -147,18 +183,17 @@ class Score {
   // another as far as the compiler can prove, so the store to z forces a
   // reload and a second square root of a sum the line above already has.
   void ftrl_update(real_t* p, real_t g) {
-    real_t weight = p[0];
-    real_t sqrt_old_n = std::sqrt(p[1]);
-    real_t n = p[1] + g * g;
-    real_t sqrt_n = std::sqrt(n);
-    real_t sigma = (sqrt_n - sqrt_old_n) * inv_alpha_;
-    real_t z = p[2] + (g - sigma * weight);
+    const real_t weight = p[0];
+    const real_t sqrt_old_n = std::sqrt(p[1]);
+    const real_t n = p[1] + g * g;
+    const real_t sqrt_n = std::sqrt(n);
+    const real_t sigma = (sqrt_n - sqrt_old_n) * inv_alpha_;
+    const real_t z = p[2] + (g - sigma * weight);
     // Both arms, then a select. Which way z falls is a coin toss the branch
     // predictor cannot learn, and the mispredict costs more than the divide
     // it was there to skip.
-    real_t sign = std::copysign(1.0f, z);
-    real_t weight_next = (sign * lambda_1_ - z) /
-                         ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
+    const real_t weight_next = (std::copysign(lambda_1_, z) - z) /
+                               ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
     p[0] = std::fabs(z) <= lambda_1_ ? 0.0f : weight_next;
     p[1] = n;
     p[2] = z;
@@ -173,8 +208,8 @@ class Score {
   // adding lambda_2 * weight here as well applies it twice: with no loss
   // gradient at all, a nonzero weight would move n and z as though an example
   // had arrived, and then be penalized again on the way out.
-  void ftrl_linear_grad(RowRef row, Model& model, real_t pg, real_t norm) {
-    real_t sqrt_norm = std::sqrt(norm);
+  void ftrl_linear_grad(RowRef row, Model& model, real_t pg,
+                        real_t sqrt_norm) {
     real_t* w = model.GetParameter_w();
     index_t num_feat = model.GetNumFeature();
     for (index_t n = 0; n < row.len; ++n) {
@@ -186,6 +221,49 @@ class Score {
     }
     // bias
     this->ftrl_update(model.GetParameter_b(), pg);
+  }
+
+  void sgd_linear_grad(RowRef row, Model& model, real_t pg,
+                       real_t sqrt_norm) {
+    real_t* w = model.GetParameter_w();
+    index_t num_feat = model.GetNumFeature();
+    for (index_t n = 0; n < row.len; ++n) {
+      index_t feat_id = row.feat(n);
+      // To avoid unseen feature
+      if (feat_id >= num_feat) continue;
+      real_t &wl = w[feat_id];
+      real_t g = regu_lambda_ * wl + pg * row.val(n) * sqrt_norm;
+      wl -= learning_rate_ * g;
+    }
+    // bias
+    real_t &wb = model.GetParameter_b()[0];
+    wb -= learning_rate_ * pg;
+  }
+
+  void adagrad_linear_grad(RowRef row, Model& model, real_t pg,
+                           real_t sqrt_norm) {
+    real_t* w = model.GetParameter_w();
+    index_t num_feat = model.GetNumFeature();
+    for (index_t n = 0; n < row.len; ++n) {
+      index_t feat_id = row.feat(n);
+      // To avoid unseen feature
+      if (feat_id >= num_feat) continue;
+      real_t &wl = w[feat_id*2];
+      real_t &wlg = w[feat_id*2+1];
+      real_t g = regu_lambda_ * wl + pg * row.val(n) * sqrt_norm;
+      // Hold the updated cache in a register: writing it to w[] and reading it
+      // straight back puts a store-to-load round trip on the critical path,
+      // ahead of a square root that is already the longest link in it.
+      real_t cache = wlg + g*g;
+      wlg = cache;
+      wl -= learning_rate_ * g * InvSqrt(cache);
+    }
+    // bias
+    real_t* b = model.GetParameter_b();
+    real_t &wb = b[0];
+    real_t &wbg = b[1];
+    wbg += pg * pg;
+    wb -= learning_rate_ * pg * InvSqrt(wbg);
   }
 
   real_t learning_rate_;

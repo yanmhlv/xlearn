@@ -1,0 +1,75 @@
+version: '3'
+
+vars:
+  PRESET: '{{.PRESET | default "dev"}}'
+  BUILD_DIR: ./build/{{.PRESET}}
+  PYTHON: '{{.PYTHON | default "python3"}}'
+
+tasks:
+  default:
+    cmds: [task --list]
+    silent: true
+
+  build:
+    desc: Configure and build (PRESET=dev|debug|dist)
+    aliases: [b]
+    cmds:
+      - cmake --preset {{.PRESET}}
+      - cmake --build --preset {{.PRESET}} -j
+
+  test:
+    desc: Run every test
+    aliases: [t]
+    cmds:
+      - ctest --preset {{.PRESET}}
+
+  test-one:
+    desc: Run one test binary (NAME=fm_score_test)
+    requires:
+      vars: [NAME]
+    cmds:
+      - ctest --preset {{.PRESET}} -R '^{{.NAME}}$'
+
+  test-case:
+    desc: Run one case (PACKAGE=score NAME=fm_score_test CASE=FMScoreTest.calc_score)
+    requires:
+      vars: [PACKAGE, NAME, CASE]
+    dir: '{{.BUILD_DIR}}/test/{{.PACKAGE}}'
+    cmds:
+      - ./{{.NAME}} --gtest_filter='{{.CASE}}'
+
+  bench:
+    desc: Run a benchmark (NAME=score_bench, FILTER optional)
+    requires:
+      vars: [NAME]
+    cmds:
+      - '{{.BUILD_DIR}}/bench/{{.NAME}}{{if .FILTER}} --benchmark_filter={{.FILTER}}{{end}}'
+
+  install-python:
+    desc: Build and install the Python extension and its test dependencies
+    cmds:
+      - '{{.PYTHON}} -m pip install .[sklearn] pandas'
+
+  test-python:
+    desc: Install the extension and run the Python tests
+    cmds:
+      - task: install-python
+      - '{{.PYTHON}} -m unittest discover -s python-package/test -p test_data_conversion.py'
+      - task: test-python-criteo
+
+  test-python-criteo:
+    internal: true
+    dir: demo/classification/criteo_ctr
+    cmds:
+      - '{{.PYTHON}} {{.ROOT_DIR}}/python-package/test/test_python.py'
+
+  ci:
+    desc: Build and test, mirroring the C++ CI job
+    cmds:
+      - task: build
+      - task: test
+
+  clean:
+    desc: Remove the build tree of a preset
+    cmds:
+      - rm -rf {{.BUILD_DIR}}

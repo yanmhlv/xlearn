@@ -263,7 +263,8 @@ void Model::Serialize(const std::string& filename) {
 // Serialize current model to a TXT file.
 void Model::SerializeToTXT(const std::string& filename) {
   CHECK_NE(filename.empty(), true);
-  std::ofstream o_file(filename);
+  const std::string pending = PendingName(filename);
+  std::ofstream o_file(pending);
   /*********************************************************
    *  Write linear and bias term                      *
    *********************************************************/
@@ -316,6 +317,8 @@ void Model::SerializeToTXT(const std::string& filename) {
       }
     }
   }
+  o_file.close();
+  RenameFileOrDie(pending, filename);
 }
 
 // Deserialize model from a checkpoint file

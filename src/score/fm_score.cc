@@ -113,13 +113,12 @@ inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
 template <bool kWantPair, int kChains, int N, int AK>
 real_t AccumulateChained(RowRef row,
                          Model& model,
-                         real_t norm,
+                         real_t sqrt_norm,
                          const LatentLayout& lay,
                          real_t* s) {
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
   const index_t step = kChains * Vec<N>::Lanes();
   const index_t unrolled_end = aligned_k - aligned_k % step;
-  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> total[kChains];
   for (int c = 0; c < kChains; ++c) {
     total[c] = Vec<N>::Zero();
@@ -170,17 +169,17 @@ real_t AccumulateChained(RowRef row,
 template <bool kWantPair, int N, int AK>
 real_t AccumulateBlocks(RowRef row,
                         Model& model,
-                        real_t norm,
+                        real_t sqrt_norm,
                         const LatentLayout& lay,
                         real_t* s) {
   const index_t blocks = (AK != 0 ? AK : lay.aligned_k) / Vec<N>::Lanes();
   if (blocks >= 4) {
-    return AccumulateChained<kWantPair, 4, N, AK>(row, model, norm, lay, s);
+    return AccumulateChained<kWantPair, 4, N, AK>(row, model, sqrt_norm, lay, s);
   }
   if (blocks >= 2) {
-    return AccumulateChained<kWantPair, 2, N, AK>(row, model, norm, lay, s);
+    return AccumulateChained<kWantPair, 2, N, AK>(row, model, sqrt_norm, lay, s);
   }
-  return AccumulateChained<kWantPair, 1, N, AK>(row, model, norm, lay, s);
+  return AccumulateChained<kWantPair, 1, N, AK>(row, model, sqrt_norm, lay, s);
 }
 
 // And on the plane length itself, where it is one of the two worth compiling
@@ -190,16 +189,16 @@ real_t AccumulateBlocks(RowRef row,
 template <bool kWantPair, int N>
 real_t Accumulate(RowRef row,
                   Model& model,
-                  real_t norm,
+                  real_t sqrt_norm,
                   const LatentLayout& lay,
                   real_t* s) {
   if (lay.aligned_k == 8) {
-    return AccumulateBlocks<kWantPair, N, 8>(row, model, norm, lay, s);
+    return AccumulateBlocks<kWantPair, N, 8>(row, model, sqrt_norm, lay, s);
   }
   if (lay.aligned_k == 4) {
-    return AccumulateBlocks<kWantPair, N, 4>(row, model, norm, lay, s);
+    return AccumulateBlocks<kWantPair, N, 4>(row, model, sqrt_norm, lay, s);
   }
-  return AccumulateBlocks<kWantPair, N, 0>(row, model, norm, lay, s);
+  return AccumulateBlocks<kWantPair, N, 0>(row, model, sqrt_norm, lay, s);
 }
 
 //------------------------------------------------------------------------------
@@ -216,13 +215,12 @@ template <int N, int AK>
 void LatentSgdAt(RowRef row,
                  Model& model,
                  real_t pg,
-                 real_t norm,
+                 real_t sqrt_norm,
                  const LatentLayout& lay,
                  const real_t* s,
                  real_t learning_rate,
                  real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
-  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> lr = Vec<N>::Broadcast(learning_rate);
   Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
@@ -246,13 +244,12 @@ template <int N, int AK>
 void LatentAdagradAt(RowRef row,
                      Model& model,
                      real_t pg,
-                     real_t norm,
+                     real_t sqrt_norm,
                      const LatentLayout& lay,
                      const real_t* s,
                      real_t learning_rate,
                      real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
-  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> lr = Vec<N>::Broadcast(learning_rate);
   Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
@@ -279,7 +276,7 @@ template <int N, int AK>
 void LatentFtrlAt(RowRef row,
                   Model& model,
                   real_t pg,
-                  real_t norm,
+                  real_t sqrt_norm,
                   const LatentLayout& lay,
                   const real_t* s,
                   real_t inv_alpha_val,
@@ -287,7 +284,6 @@ void LatentFtrlAt(RowRef row,
                   real_t lambda_1_val,
                   real_t lambda_2_val) {
   const index_t aligned_k = AK != 0 ? AK : lay.aligned_k;
-  const real_t sqrt_norm = std::sqrt(norm);
   Vec<N> pg_all = Vec<N>::Broadcast(pg);
   Vec<N> inv_alpha = Vec<N>::Broadcast(inv_alpha_val);
   Vec<N> beta = Vec<N>::Broadcast(beta_val);
@@ -335,19 +331,19 @@ template <int N>
 void LatentSgd(RowRef row,
                Model& model,
                real_t pg,
-               real_t norm,
+               real_t sqrt_norm,
                const LatentLayout& lay,
                const real_t* s,
                real_t learning_rate,
                real_t regu_lambda) {
   if (lay.aligned_k == 8) {
-    LatentSgdAt<N, 8>(row, model, pg, norm, lay, s,
+    LatentSgdAt<N, 8>(row, model, pg, sqrt_norm, lay, s,
                       learning_rate, regu_lambda);
   } else if (lay.aligned_k == 4) {
-    LatentSgdAt<N, 4>(row, model, pg, norm, lay, s,
+    LatentSgdAt<N, 4>(row, model, pg, sqrt_norm, lay, s,
                       learning_rate, regu_lambda);
   } else {
-    LatentSgdAt<N, 0>(row, model, pg, norm, lay, s,
+    LatentSgdAt<N, 0>(row, model, pg, sqrt_norm, lay, s,
                       learning_rate, regu_lambda);
   }
 }
@@ -356,19 +352,19 @@ template <int N>
 void LatentAdagrad(RowRef row,
                    Model& model,
                    real_t pg,
-                   real_t norm,
+                   real_t sqrt_norm,
                    const LatentLayout& lay,
                    const real_t* s,
                    real_t learning_rate,
                    real_t regu_lambda) {
   if (lay.aligned_k == 8) {
-    LatentAdagradAt<N, 8>(row, model, pg, norm, lay, s,
+    LatentAdagradAt<N, 8>(row, model, pg, sqrt_norm, lay, s,
                           learning_rate, regu_lambda);
   } else if (lay.aligned_k == 4) {
-    LatentAdagradAt<N, 4>(row, model, pg, norm, lay, s,
+    LatentAdagradAt<N, 4>(row, model, pg, sqrt_norm, lay, s,
                           learning_rate, regu_lambda);
   } else {
-    LatentAdagradAt<N, 0>(row, model, pg, norm, lay, s,
+    LatentAdagradAt<N, 0>(row, model, pg, sqrt_norm, lay, s,
                           learning_rate, regu_lambda);
   }
 }
@@ -377,7 +373,7 @@ template <int N>
 void LatentFtrl(RowRef row,
                 Model& model,
                 real_t pg,
-                real_t norm,
+                real_t sqrt_norm,
                 const LatentLayout& lay,
                 const real_t* s,
                 real_t inv_alpha_val,
@@ -385,13 +381,13 @@ void LatentFtrl(RowRef row,
                 real_t lambda_1_val,
                 real_t lambda_2_val) {
   if (lay.aligned_k == 8) {
-    LatentFtrlAt<N, 8>(row, model, pg, norm, lay, s,
+    LatentFtrlAt<N, 8>(row, model, pg, sqrt_norm, lay, s,
                        inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
   } else if (lay.aligned_k == 4) {
-    LatentFtrlAt<N, 4>(row, model, pg, norm, lay, s,
+    LatentFtrlAt<N, 4>(row, model, pg, sqrt_norm, lay, s,
                        inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
   } else {
-    LatentFtrlAt<N, 0>(row, model, pg, norm, lay, s,
+    LatentFtrlAt<N, 0>(row, model, pg, sqrt_norm, lay, s,
                        inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
   }
 }
@@ -426,8 +422,8 @@ real_t FMScore::CalcScore(RowRef row,
   LatentLayout lay = LayoutOf(model);
   real_t* s = ZeroedScratch(lay.aligned_k);
   return t + (WideLanes(lay.aligned_k)
-                  ? Accumulate<true, 8>(row, model, norm, lay, s)
-                  : Accumulate<true, 4>(row, model, norm, lay, s));
+                  ? Accumulate<true, 8>(row, model, sqrt_norm, lay, s)
+                  : Accumulate<true, 4>(row, model, sqrt_norm, lay, s));
 }
 
 // The row's linear weights and latent blocks, on their way before the row is
@@ -452,12 +448,13 @@ void FMScore::CalcGrad(RowRef row,
                        Model& model,
                        real_t pg,
                        real_t norm) {
+  const real_t sqrt_norm = std::sqrt(norm);
   LatentLayout lay = LayoutOf(model);
   real_t* s = ZeroedScratch(lay.aligned_k);
   if (WideLanes(lay.aligned_k)) {
-    Accumulate<false, 8>(row, model, norm, lay, s);
+    Accumulate<false, 8>(row, model, sqrt_norm, lay, s);
   } else {
-    Accumulate<false, 4>(row, model, norm, lay, s);
+    Accumulate<false, 4>(row, model, sqrt_norm, lay, s);
   }
   this->latent_grad(row, model, pg, norm, s);
 }
@@ -509,30 +506,16 @@ void FMScore::calc_grad_sgd(RowRef row,
    *  linear term and bias term                            *
    *********************************************************/  
   real_t sqrt_norm = std::sqrt(norm);
-  real_t *w = model.GetParameter_w();
-  index_t num_feat = model.GetNumFeature();
-  for (index_t n = 0; n < row.len; ++n) {
-    index_t feat_id = row.feat(n);
-    // To avoid unseen feature
-    if (feat_id >= num_feat) continue;
-    real_t &wl = w[feat_id];
-    real_t g = regu_lambda_*wl+pg*row.val(n)*sqrt_norm;
-    wl -= learning_rate_ * g;
-  }
-  // bias
-  w = model.GetParameter_b();
-  real_t &wb = w[0];
-  real_t g = pg;
-  wb -= learning_rate_ * g;
+  this->sgd_linear_grad(row, model, pg, sqrt_norm);
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
   LatentLayout lay = LayoutOf(model);
   if (WideLanes(lay.aligned_k)) {
-    LatentSgd<8>(row, model, pg, norm, lay, s,
+    LatentSgd<8>(row, model, pg, sqrt_norm, lay, s,
                  learning_rate_, regu_lambda_);
   } else {
-    LatentSgd<4>(row, model, pg, norm, lay, s,
+    LatentSgd<4>(row, model, pg, sqrt_norm, lay, s,
                  learning_rate_, regu_lambda_);
   }
 }
@@ -547,35 +530,16 @@ void FMScore::calc_grad_adagrad(RowRef row,
    *  linear term and bias term                            *
    *********************************************************/
   real_t sqrt_norm = std::sqrt(norm);
-  real_t *w = model.GetParameter_w();
-  index_t num_feat = model.GetNumFeature();
-  for (index_t n = 0; n < row.len; ++n) {
-    index_t feat_id = row.feat(n);
-    // To avoid unseen feature
-    if (feat_id >= num_feat) continue;
-    real_t &wl = w[feat_id*2];
-    real_t &wlg = w[feat_id*2+1];
-    real_t g = regu_lambda_*wl+pg*row.val(n)*sqrt_norm;
-    real_t cache = wlg + g*g;
-    wlg = cache;
-    wl -= learning_rate_ * g * InvSqrt(cache);
-  }
-  // bias
-  w = model.GetParameter_b();
-  real_t &wb = w[0];
-  real_t &wbg = w[1];
-  real_t g = pg;
-  wbg += g*g;
-  wb -= learning_rate_ * g * InvSqrt(wbg);
+  this->adagrad_linear_grad(row, model, pg, sqrt_norm);
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
   LatentLayout lay = LayoutOf(model);
   if (WideLanes(lay.aligned_k)) {
-    LatentAdagrad<8>(row, model, pg, norm, lay, s,
+    LatentAdagrad<8>(row, model, pg, sqrt_norm, lay, s,
                      learning_rate_, regu_lambda_);
   } else {
-    LatentAdagrad<4>(row, model, pg, norm, lay, s,
+    LatentAdagrad<4>(row, model, pg, sqrt_norm, lay, s,
                      learning_rate_, regu_lambda_);
   }
 }
@@ -589,16 +553,17 @@ void FMScore::calc_grad_ftrl(RowRef row,
   /*********************************************************
    *  linear term and bias term                            *
    *********************************************************/
-  this->ftrl_linear_grad(row, model, pg, norm);
+  const real_t sqrt_norm = std::sqrt(norm);
+  this->ftrl_linear_grad(row, model, pg, sqrt_norm);
   /*********************************************************
    *  latent factor                                        *
    *********************************************************/
   LatentLayout lay = LayoutOf(model);
   if (WideLanes(lay.aligned_k)) {
-    LatentFtrl<8>(row, model, pg, norm, lay, s,
+    LatentFtrl<8>(row, model, pg, sqrt_norm, lay, s,
                   inv_alpha_, beta_, lambda_1_, lambda_2_);
   } else {
-    LatentFtrl<4>(row, model, pg, norm, lay, s,
+    LatentFtrl<4>(row, model, pg, sqrt_norm, lay, s,
                   inv_alpha_, beta_, lambda_1_, lambda_2_);
   }
 }

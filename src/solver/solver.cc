@@ -338,13 +338,8 @@ void Solver::init_train() {
   // Initialize parameters from reader
   if (hyper_param_.pre_model_file.empty()) {
     model_ = new Model();
-    if (hyper_param_.opt_type.compare("sgd") == 0) {
-      hyper_param_.auxiliary_size = 1;
-    } else if (hyper_param_.opt_type.compare("adagrad") == 0) {
-      hyper_param_.auxiliary_size = 2;
-    } else if (hyper_param_.opt_type.compare("ftrl") == 0) {
-      hyper_param_.auxiliary_size = 3;
-    }
+    hyper_param_.auxiliary_size =
+        AuxiliarySizeFor(OptTypeOf(hyper_param_.opt_type));
     model_->Initialize(hyper_param_.score_func,
                      hyper_param_.loss_func,
                      hyper_param_.num_feature,
@@ -378,6 +373,14 @@ void Solver::init_train() {
                      hyper_param_.lambda_1,
                      hyper_param_.lambda_2,
                      hyper_param_.opt_type);
+  // A pre-trained model brings its own layout, and the optimizer still comes
+  // from the command line, so this is the first point at which the two are
+  // both known.
+  std::string mismatch = score_->ModelMismatch(*model_);
+  if (!mismatch.empty()) {
+    Color::print_error(mismatch);
+    exit(0);
+  }
   LOG(INFO) << "Initialize score function.";
   /*********************************************************
    *  Initialize loss function                             *

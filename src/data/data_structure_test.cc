@@ -26,6 +26,20 @@ namespace xLearn {
 
 const size_t kLength = 10;
 
+namespace {
+
+void FillMatrix(DMatrix& matrix, real_t val, real_t norm) {
+  matrix.Reset();
+  for (size_t i = 0; i < kLength; ++i) {
+    matrix.AddRow();
+    matrix.AddNode(i, i, val, i);
+    matrix.Y[i] = i;
+    matrix.norm[i] = norm;
+  }
+}
+
+}  // namespace
+
 TEST(DMATRIX_TEST, Reserve) {
   DMatrix matrix;
   matrix.Reserve(kLength, kLength * 4);
@@ -79,13 +93,7 @@ TEST(DMATRIX_TEST, AddData) {
 
 TEST(DMATRIX_TEST, Serialize_and_Deserialize) {
   DMatrix matrix;
-  matrix.Reset();
-  for (size_t i = 0; i < kLength; ++i) {
-    matrix.AddRow();
-    matrix.AddNode(i, i, 2.5, i);
-    matrix.Y[i] = i;
-    matrix.norm[i] = 0.25;
-  }
+  FillMatrix(matrix, 2.5, 0.25);
   matrix.SetHash(1234, 5678);
   // Serialize
 #ifndef _MSC_VER
@@ -138,13 +146,7 @@ TEST(DMATRIX_TEST, Serialize_and_Deserialize) {
 TEST(DMATRIX_TEST, Deserialize_rejects_truncation) {
   const char* filename = "/tmp/test_truncated.bin";
   DMatrix matrix;
-  matrix.Reset();
-  for (size_t i = 0; i < kLength; ++i) {
-    matrix.AddRow();
-    matrix.AddNode(i, i, 2.5, i);
-    matrix.Y[i] = i;
-    matrix.norm[i] = 0.25;
-  }
+  FillMatrix(matrix, 2.5, 0.25);
   matrix.SetHash(1234, 5678);
   matrix.Serialize(filename);
 
@@ -165,13 +167,7 @@ TEST(DMATRIX_TEST, Deserialize_rejects_truncation) {
 TEST(DMATRIX_TEST, Serialize_leaves_no_pending_file) {
   const std::string filename("/tmp/test_pending.bin");
   DMatrix matrix;
-  matrix.Reset();
-  for (size_t i = 0; i < kLength; ++i) {
-    matrix.AddRow();
-    matrix.AddNode(i, i, 2.5, i);
-    matrix.Y[i] = i;
-    matrix.norm[i] = 0.25;
-  }
+  FillMatrix(matrix, 2.5, 0.25);
   matrix.SetHash(1234, 5678);
   matrix.Serialize(filename);
 
@@ -192,24 +188,12 @@ TEST(DMATRIX_TEST, Serialize_replaces_an_existing_file) {
   const std::string filename("../../test_overwrite.bin");
 #endif
   DMatrix first;
-  first.Reset();
-  for (size_t i = 0; i < kLength; ++i) {
-    first.AddRow();
-    first.AddNode(i, i, 2.5, i);
-    first.Y[i] = i;
-    first.norm[i] = 0.25;
-  }
+  FillMatrix(first, 2.5, 0.25);
   first.SetHash(1234, 5678);
   first.Serialize(filename);
 
   DMatrix second;
-  second.Reset();
-  for (size_t i = 0; i < kLength; ++i) {
-    second.AddRow();
-    second.AddNode(i, i, 7.5, i);
-    second.Y[i] = i;
-    second.norm[i] = 0.5;
-  }
+  FillMatrix(second, 7.5, 0.5);
   second.SetHash(8765, 4321);
   second.Serialize(filename);
 
@@ -229,13 +213,7 @@ TEST(DMATRIX_TEST, Serialize_replaces_an_existing_file) {
 
 TEST(DMATRIX_TEST, Find_Max_Feat_and_Field) {
   DMatrix matrix;
-  matrix.Reset();
-  for (size_t i = 0; i < kLength; ++i) {
-    matrix.AddRow();
-    matrix.AddNode(i, i, 2.5, i);
-    matrix.Y[i] = i;
-    matrix.norm[i] = 0.25;
-  }
+  FillMatrix(matrix, 2.5, 0.25);
   matrix.SetHash(1234, 5678);
   EXPECT_EQ(matrix.MaxFeat(), 9);
   EXPECT_EQ(matrix.MaxField(), 9);
@@ -243,13 +221,7 @@ TEST(DMATRIX_TEST, Find_Max_Feat_and_Field) {
 
 TEST(DMATRIX_TEST, CopyFrom) {
   DMatrix matrix;
-  matrix.Reset();
-  for (size_t i = 0; i < kLength; ++i) {
-    matrix.AddRow();
-    matrix.AddNode(i, i, 2.5, i);
-    matrix.Y[i] = i;
-    matrix.norm[i] = 0.25;
-  }
+  FillMatrix(matrix, 2.5, 0.25);
   matrix.SetHash(1234, 5678);
   // Copy matrix
   DMatrix new_matrix;

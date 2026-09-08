@@ -27,10 +27,10 @@ reading data from data source.
 #include <thread>
 #include <algorithm>
 #include <random>
+#include <memory>
 
 #include "src/base/common.h"
 #include "src/base/class_register.h"
-#include "src/base/scoped_ptr.h"
 #include "src/base/thread_pool.h"
 #include "src/data/data_structure.h"
 #include "src/reader/parser.h"
@@ -192,7 +192,7 @@ class Reader {
   /* A block of memory to store the data. Owned: the paths that allocate it and
   the paths that do not both reach the destructor, and only one of them has a
   buffer to release. */
-  scoped_array<char> block_;
+  std::unique_ptr<char[]> block_;
   /* Block size */
   size_t block_size_;
   /* Draws the shuffle order. Carried across epochs rather than re-seeded at
@@ -262,11 +262,6 @@ class InmemReader : public Reader {
     if (shuffle_ && !rows_.empty()) {
       ShuffleOrder(rows_, this->rng_);
     }
-  }
-
-  // Get data buffer
-  virtual inline DMatrix* GetMatrix() {
-    return &data_buf_;
   }
 
  protected:

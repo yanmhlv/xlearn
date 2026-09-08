@@ -105,6 +105,11 @@ submodule.
 
 ### Changed
 
+- **The FFM pair walk drops the coefficient a one-hot Row cannot vary.** Where
+  the data stores no value column and normalization is off, every pair
+  coefficient is exactly 1.0, and the kernels are instantiated without it:
+  4-8.5% on the affected kernel-benchmark cases, 2.8% on a one-hot epoch.
+  Models are bit-identical, and Rows with stored values are untouched.
 - **Examples are stored as columns** rather than as a separately heap-allocated
   vector of 12-byte nodes per Example, and a column whose entries never vary is
   not stored at all. ~173 bytes per Example becomes ~44 on libsvm data.
