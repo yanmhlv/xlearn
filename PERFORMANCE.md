@@ -539,6 +539,95 @@ the most confident positives under the lowest score. A single-class input
 returns 0.5 rather than NaN, which compares false against everything and told
 early stopping that no epoch ever improved.
 
+## 19. FFM: drop the pair coefficient a one-hot row cannot vary
+
+**Status:** accepted. Ported from the sibling Rust engine, which measured the
+same specialization at 0.96x.
+
+**Problem.** The FFM pair walk multiplies every pair by
+`terms[i].val * norm * terms[j].val`. On one-hot data trained with `--no-norm`
+all three factors are exactly 1.0, so the walk spends a broadcast, two scalar
+multiplies and two value loads per pair to compute a number it already knows,
+`O(nnz^2)` times per Row.
+
+**Decision.** `UnitPairs(row, norm)` decides once per Row whether the
+coefficient can be dropped, and `kUnit` carries the answer into the four latent
+kernels as a template parameter, so each instantiation compiles to one arm.
+
+**The flag is free, and it is a proof rather than a scan.** `DMatrix` already
+elides the value column, materializing it the moment a value differs from 1.0
+(`AddNode`), so `row.vals == nullptr` *is* the statement that every value in
+the matrix is exactly one. The test is a null pointer check and a float
+compare against the normalizer -- no per-term pass, which is what the Rust port
+needs, since it stores values unconditionally.
+
+**Measurement.** Note the host: these were taken on an unpinned Apple M1 Pro,
+not the pinned i5-13500 the harness section above specifies, so they are not
+directly comparable with the x86 figures in every other record here. The
+protocol that is preserved is the one that matters for a ratio -- interleaved
+arms, rotated order, a duplicate control carried in every run, minima pooled.
+Kernel bench, 11 repetitions, duplicate control at 0.998x-1.002x. The ceiling
+column is the probe below:
+
+| case | candidate | ceiling |
+|---|---|---|
+| ffm/sgd/grad/k=4 | **0.915x** | 0.915x |
+| ffm/adagrad/score/k=4 | **0.924x** | 0.924x |
+| ffm/ftrl/score/k=4 | **0.943x** | 0.942x |
+| ffm/adagrad/grad/k=4 | **0.960x** | 0.959x |
+| ffm/adagrad/score/k=16 | **0.963x** | 0.961x |
+| ffm/sgd/grad/k=16 | **0.978x** | 0.981x |
+
+The candidate reaches the ceiling everywhere: there is nothing left of this
+idea to collect. End to end, 400k one-hot Rows, `--no-norm`, slope method, one
+thread: FFM sgd **0.972x** against a 0.995x duplicate floor, FFM adagrad
+0.978x and 0.944x across two runs at floors of 0.991x and 0.969x. One
+direction in all three, and the smaller readings are inside this host's floor
+on their own -- the kernel bench is what carries the size of the claim.
+
+**The controls are what attribute it.** LR reads 1.025x against a duplicate at
+1.025x -- exactly equal, and LR has no pair walk. FM reads 1.012x at a 0.967x
+floor and executes none of the changed code. FFM on *valued* Rows -- the same
+400k shapes with the values stored -- reads 0.992x at a 0.985x floor, because
+those Rows take the general path. A change that only moved code placement
+could not be flat there and 2.8% on the unit path.
+
+**Bit-identical, and that is a claim about rounding.** Dropping a multiply by
+exactly 1.0 is exact only if the surrounding arithmetic keeps its shape. The
+score kernel accumulated `MulAdd(w1*w2, val, acc)`, which rounds the product
+and then fuses -- so the unit arm is `acc + w1*w2`, two roundings, and **not**
+`MulAdd(w1, w2, acc)`, which is a true fused multiply-add that rounds once.
+Written the fused way the models diverge; a test states this, and fails on the
+mutation. All 12 combinations of three optimizers, two datasets and
+normalization on and off train byte-identical models against the baseline
+binary, behind a same-binary determinism control.
+
+**Consequences.** Six instantiations per width per kernel where there were
+three. Both facts -- the plane length and the coefficient -- are resolved at a
+single `Dispatch`, because the score half and the update half of this walk are
+two seams asking the same question: the Rust port specialized one of them and
+shipped a release carrying the work in the other, worth 3.5-5.5% when it was
+finally found.
+
+**And it moved the benchmark set's meaning.** Every pre-existing case built its
+Nodes with value 1.0 and scored at `norm = 1.0`, so all of them now take the
+unit path and the general walk had no coverage at all. Four `/valued` cases
+were added for it.
+
+## 20. FTRL: spend the sign rather than materialize it
+
+**Status:** accepted, unmeasured.
+
+The scalar `ftrl_update` built `sign = copysign(1.0f, z)` and spent it once, on
+`sign * lambda_1_`, which is `copysign(lambda_1_, z)`. Now written that way.
+
+**No timing claim.** In the sibling Rust engine the same rewrite was worth
+1.17x, but that was thirty-six `vblendvps` in an unrolled *vector* loop, where
+the blend competed with every shuffle for one issue port. The vector kernels
+here have used `CopySign` and `Abs` since record 14, so what is left is one
+scalar multiply per feature. Bit-identical, and recorded so the Rust number is
+not read across as available here.
+
 ---
 
 # Rejected
@@ -615,6 +704,24 @@ See decision 18. The sharding was more work than the counting it parallelized.
 
 ---
 
+## R9. FM: the same unit-pair specialization
+
+**Priced, not built.** FM's per-feature coefficient was deleted the same way
+and measured: `fm/sgd/grad/k=16` moved 0.938x, but `fm/adagrad/grad/k=16` and
+`fm/ftrl/grad/k=16` -- the identical `val` structure, the identical deletion --
+read 0.994x and 0.983x. One optimizer out of three moving on the same code is
+code placement, not a kernel effect, and the rest sit at or inside the noise
+floor.
+
+The reason it is small is structural, and worth keeping: FM's coefficient is
+per *feature* and its walk is linear in `nnz`, where FFM's is per *pair* and
+quadratic. There is a factor of `nnz` between what the two can save.
+
+The probe was also weaker than FFM's: it left `Broadcast(1.0f)` feeding
+`Load(w+d) * val` and `NegMulAdd(weight, val, sum)`, so whether any work was
+actually deleted depended on the compiler folding a splat of one through those
+intrinsics. A real attempt would write `x = Load(w+d)` and `sum - weight`.
+
 ## Where this leaves the engine
 
 Against the engine as it stood before this work (`6c97797`), on 300k Examples ×
@@ -659,10 +766,6 @@ caught it; without them the FM `CalcScore` number would have been reported at
 ## Known headroom
 
 - **FFM adagrad**, the one configuration still behind the reference.
-- **The `unit` specialization.** One-hot data with normalization off multiplies
-  every pair by `1.0 * 1.0 * 1.0`; specializing that away deletes the per-pair
-  value loads and two scalar multiplies. Not implemented here, and not visible
-  on the benchmark set, which runs with normalization on.
 - **Tiled shuffling.** Keeping the shuffled walk near-sequential, rather than
   uniformly random, trades a little independence for locality.
 - **Duplicate (feature, field) Nodes in one Example.** The FFM pair loop reads

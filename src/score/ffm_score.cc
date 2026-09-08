@@ -19,6 +19,7 @@ This file is the implementation of FFMScore class.
 */
 
 #include <cmath>
+#include <type_traits>
 #include <vector>
 
 #include "src/score/ffm_score.h"
@@ -58,10 +59,10 @@ const std::vector<Term>& RowTerms(RowRef row,
                                   index_t align0) {
   std::vector<Term>& terms = TermStorage();
   terms.clear();
-  real_t* v = model.GetParameter_v();
-  index_t num_feat = model.GetNumFeature();
-  index_t num_field = model.GetNumField();
-  index_t align1 = num_field * align0;
+  real_t* const v = model.GetParameter_v();
+  const index_t num_feat = model.GetNumFeature();
+  const index_t num_field = model.GetNumField();
+  const index_t align1 = num_field * align0;
   for (index_t n = 0; n < row.len; ++n) {
     // To avoid unseen feature in Prediction
     if (row.feat(n) >= num_feat || row.field(n) >= num_field) continue;
@@ -78,7 +79,11 @@ const std::vector<Term>& FilledTerms() { return TermStorage(); }
 
 // Whether the latent planes can be walked eight lanes at a time -- the same
 // rule FM uses, see WideLanes() there.
-inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
+constexpr bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
+
+constexpr bool UnitPairs(RowRef row, real_t norm) {
+  return row.vals == nullptr && norm == 1.0f;
+}
 
 //------------------------------------------------------------------------------
 // The latent half of each kernel, one per optimizer plus the score.
@@ -96,28 +101,29 @@ inline bool WideLanes(index_t aligned_k) { return aligned_k % 8 == 0; }
 // where the block loop below runs once: told so, it unrolls away, and with it
 // the compare, the branch and the pointer bumps that cost as much as the one
 // block they guard.
-template <int N, int AK>
+template <int N, int AK, bool kUnit>
 real_t LatentScoreAt(const std::vector<Term>& terms,
                      index_t runtime_k,
                      real_t norm) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
-  const index_t kStep = Vec<N>::Lanes();
+  constexpr index_t kStep = Vec<N>::Lanes();
   const index_t unrolled_end = aligned_k - aligned_k % (4*kStep);
   Vec<N> total0 = Vec<N>::Zero();
   Vec<N> total1 = Vec<N>::Zero();
   Vec<N> total2 = Vec<N>::Zero();
   Vec<N> total3 = Vec<N>::Zero();
   for (size_t i = 0; i < num_term; ++i) {
-    real_t* base1 = terms[i].base;
-    index_t field_off1 = terms[i].field_off;
-    real_t v1 = terms[i].val * norm;
+    real_t* const base1 = terms[i].base;
+    const index_t field_off1 = terms[i].field_off;
+    const real_t v1 = kUnit ? 1.0f : terms[i].val * norm;
     for (size_t j = i+1; j < num_term; ++j) {
-      real_t* w1 = base1 + terms[j].field_off;
-      real_t* w2 = terms[j].base + field_off1;
-      Vec<N> val = Vec<N>::Broadcast(v1*terms[j].val);
+      real_t* const w1 = base1 + terms[j].field_off;
+      real_t* const w2 = terms[j].base + field_off1;
+      const Vec<N> val = Vec<N>::Broadcast(v1*terms[j].val);
       auto accumulate = [&](Vec<N> acc, index_t d) {
-        return MulAdd(Vec<N>::Load(w1 + d) * Vec<N>::Load(w2 + d), val, acc);
+        const Vec<N> prod = Vec<N>::Load(w1 + d) * Vec<N>::Load(w2 + d);
+        return kUnit ? acc + prod : MulAdd(prod, val, acc);
       };
       index_t d = 0;
       for (; d < unrolled_end; d += 4*kStep) {
@@ -136,14 +142,15 @@ real_t LatentScoreAt(const std::vector<Term>& terms,
       // k=8. Four lanes and thirty-two registers reverse that -- the shape
       // here is the one that suits the narrower register file.
       for (; d < aligned_k; d += kStep) {
-        total0 = total0 + Vec<N>::Load(w1 + d) * Vec<N>::Load(w2 + d) * val;
+        const Vec<N> prod = Vec<N>::Load(w1 + d) * Vec<N>::Load(w2 + d);
+        total0 = total0 + (kUnit ? prod : prod * val);
       }
     }
   }
   return ((total0 + total1) + (total2 + total3)).Sum();
 }
 
-template <int N, int AK>
+template <int N, int AK, bool kUnit>
 void LatentSgdAt(const std::vector<Term>& terms,
                  index_t runtime_k,
                  real_t pg,
@@ -152,24 +159,25 @@ void LatentSgdAt(const std::vector<Term>& terms,
                  real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
-  Vec<N> pg_all = Vec<N>::Broadcast(pg);
-  Vec<N> lr = Vec<N>::Broadcast(learning_rate);
-  Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
+  const Vec<N> pg_all = Vec<N>::Broadcast(pg);
+  const Vec<N> lr = Vec<N>::Broadcast(learning_rate);
+  const Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
   for (size_t i = 0; i < num_term; ++i) {
-    real_t* base1 = terms[i].base;
-    index_t field_off1 = terms[i].field_off;
-    real_t v1 = terms[i].val * norm;
+    real_t* const base1 = terms[i].base;
+    const index_t field_off1 = terms[i].field_off;
+    const real_t v1 = kUnit ? 1.0f : terms[i].val * norm;
     for (size_t j = i+1; j < num_term; ++j) {
-      real_t* w1_base = base1 + terms[j].field_off;
-      real_t* w2_base = terms[j].base + field_off1;
-      Vec<N> pgv = Vec<N>::Broadcast(v1*terms[j].val) * pg_all;
+      real_t* const w1_base = base1 + terms[j].field_off;
+      real_t* const w2_base = terms[j].base + field_off1;
+      const Vec<N> pgv = kUnit ? pg_all
+                               : Vec<N>::Broadcast(v1*terms[j].val) * pg_all;
       for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
-        real_t* w1 = w1_base + d;
-        real_t* w2 = w2_base + d;
-        Vec<N> weight1 = Vec<N>::Load(w1);
-        Vec<N> weight2 = Vec<N>::Load(w2);
-        Vec<N> grad1 = MulAdd(lamb, weight1, pgv * weight2);
-        Vec<N> grad2 = MulAdd(lamb, weight2, pgv * weight1);
+        real_t* const w1 = w1_base + d;
+        real_t* const w2 = w2_base + d;
+        const Vec<N> weight1 = Vec<N>::Load(w1);
+        const Vec<N> weight2 = Vec<N>::Load(w2);
+        const Vec<N> grad1 = MulAdd(lamb, weight1, pgv * weight2);
+        const Vec<N> grad2 = MulAdd(lamb, weight2, pgv * weight1);
         NegMulAdd(lr, grad1, weight1).Store(w1);
         NegMulAdd(lr, grad2, weight2).Store(w2);
       }
@@ -177,7 +185,7 @@ void LatentSgdAt(const std::vector<Term>& terms,
   }
 }
 
-template <int N, int AK>
+template <int N, int AK, bool kUnit>
 void LatentAdagradAt(const std::vector<Term>& terms,
                      index_t runtime_k,
                      real_t pg,
@@ -186,28 +194,29 @@ void LatentAdagradAt(const std::vector<Term>& terms,
                      real_t regu_lambda) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
-  Vec<N> pg_all = Vec<N>::Broadcast(pg);
-  Vec<N> lr = Vec<N>::Broadcast(learning_rate);
-  Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
+  const Vec<N> pg_all = Vec<N>::Broadcast(pg);
+  const Vec<N> lr = Vec<N>::Broadcast(learning_rate);
+  const Vec<N> lamb = Vec<N>::Broadcast(regu_lambda);
   for (size_t i = 0; i < num_term; ++i) {
-    real_t* base1 = terms[i].base;
-    index_t field_off1 = terms[i].field_off;
-    real_t v1 = terms[i].val * norm;
+    real_t* const base1 = terms[i].base;
+    const index_t field_off1 = terms[i].field_off;
+    const real_t v1 = kUnit ? 1.0f : terms[i].val * norm;
     for (size_t j = i+1; j < num_term; ++j) {
-      real_t* w1_base = base1 + terms[j].field_off;
-      real_t* w2_base = terms[j].base + field_off1;
-      Vec<N> pgv = Vec<N>::Broadcast(v1*terms[j].val) * pg_all;
+      real_t* const w1_base = base1 + terms[j].field_off;
+      real_t* const w2_base = terms[j].base + field_off1;
+      const Vec<N> pgv = kUnit ? pg_all
+                               : Vec<N>::Broadcast(v1*terms[j].val) * pg_all;
       for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
-        real_t* w1 = w1_base + d;
-        real_t* w2 = w2_base + d;
-        real_t* wg1 = w1 + aligned_k;
-        real_t* wg2 = w2 + aligned_k;
-        Vec<N> weight1 = Vec<N>::Load(w1);
-        Vec<N> weight2 = Vec<N>::Load(w2);
+        real_t* const w1 = w1_base + d;
+        real_t* const w2 = w2_base + d;
+        real_t* const wg1 = w1 + aligned_k;
+        real_t* const wg2 = w2 + aligned_k;
+        const Vec<N> weight1 = Vec<N>::Load(w1);
+        const Vec<N> weight2 = Vec<N>::Load(w2);
         Vec<N> weight_grad1 = Vec<N>::Load(wg1);
         Vec<N> weight_grad2 = Vec<N>::Load(wg2);
-        Vec<N> grad1 = MulAdd(lamb, weight1, pgv * weight2);
-        Vec<N> grad2 = MulAdd(lamb, weight2, pgv * weight1);
+        const Vec<N> grad1 = MulAdd(lamb, weight1, pgv * weight2);
+        const Vec<N> grad2 = MulAdd(lamb, weight2, pgv * weight1);
         weight_grad1 = MulAdd(grad1, grad1, weight_grad1);
         weight_grad2 = MulAdd(grad2, grad2, weight_grad2);
         NegMulAdd(lr, RSqrt(weight_grad1) * grad1, weight1).Store(w1);
@@ -219,7 +228,7 @@ void LatentAdagradAt(const std::vector<Term>& terms,
   }
 }
 
-template <int N, int AK>
+template <int N, int AK, bool kUnit>
 void LatentFtrlAt(const std::vector<Term>& terms,
                   index_t runtime_k,
                   real_t pg,
@@ -230,42 +239,43 @@ void LatentFtrlAt(const std::vector<Term>& terms,
                   real_t lambda_2_val) {
   const index_t aligned_k = AK != 0 ? AK : runtime_k;
   const size_t num_term = terms.size();
-  Vec<N> pg_all = Vec<N>::Broadcast(pg);
-  Vec<N> inv_alpha = Vec<N>::Broadcast(inv_alpha_val);
-  Vec<N> beta = Vec<N>::Broadcast(beta_val);
-  Vec<N> l1 = Vec<N>::Broadcast(lambda_1_val);
-  Vec<N> l2 = Vec<N>::Broadcast(lambda_2_val);
+  const Vec<N> pg_all = Vec<N>::Broadcast(pg);
+  const Vec<N> inv_alpha = Vec<N>::Broadcast(inv_alpha_val);
+  const Vec<N> beta = Vec<N>::Broadcast(beta_val);
+  const Vec<N> l1 = Vec<N>::Broadcast(lambda_1_val);
+  const Vec<N> l2 = Vec<N>::Broadcast(lambda_2_val);
   for (size_t i = 0; i < num_term; ++i) {
-    real_t* base1 = terms[i].base;
-    index_t field_off1 = terms[i].field_off;
-    real_t v1 = terms[i].val * norm;
+    real_t* const base1 = terms[i].base;
+    const index_t field_off1 = terms[i].field_off;
+    const real_t v1 = kUnit ? 1.0f : terms[i].val * norm;
     for (size_t j = i+1; j < num_term; ++j) {
-      real_t* w1_base = base1 + terms[j].field_off;
-      real_t* w2_base = terms[j].base + field_off1;
-      Vec<N> pgv = Vec<N>::Broadcast(v1*terms[j].val) * pg_all;
+      real_t* const w1_base = base1 + terms[j].field_off;
+      real_t* const w2_base = terms[j].base + field_off1;
+      const Vec<N> pgv = kUnit ? pg_all
+                               : Vec<N>::Broadcast(v1*terms[j].val) * pg_all;
       for (index_t d = 0; d < aligned_k; d += Vec<N>::Lanes()) {
-        real_t* w1 = w1_base + d;
-        real_t* w2 = w2_base + d;
-        real_t* wg1 = w1 + aligned_k;
-        real_t* wg2 = w2 + aligned_k;
-        real_t* z1 = w1 + aligned_k * 2;
-        real_t* z2 = w2 + aligned_k * 2;
-        Vec<N> weight1 = Vec<N>::Load(w1);
-        Vec<N> weight2 = Vec<N>::Load(w2);
+        real_t* const w1 = w1_base + d;
+        real_t* const w2 = w2_base + d;
+        real_t* const wg1 = w1 + aligned_k;
+        real_t* const wg2 = w2 + aligned_k;
+        real_t* const z1 = w1 + aligned_k * 2;
+        real_t* const z2 = w2 + aligned_k * 2;
+        const Vec<N> weight1 = Vec<N>::Load(w1);
+        const Vec<N> weight2 = Vec<N>::Load(w2);
         Vec<N> weight_grad1 = Vec<N>::Load(wg1);
         Vec<N> weight_grad2 = Vec<N>::Load(wg2);
         Vec<N> z_val1 = Vec<N>::Load(z1);
         Vec<N> z_val2 = Vec<N>::Load(z2);
         // The loss gradient alone; l2 is the proximal term in the denominators
         // below, and adding it here as well would apply it twice.
-        Vec<N> grad1 = pgv * weight2;
-        Vec<N> grad2 = pgv * weight1;
-        Vec<N> grad_sq1 = grad1 * grad1;
-        Vec<N> grad_sq2 = grad2 * grad2;
-        Vec<N> sigma1 = (Sqrt(weight_grad1 + grad_sq1)
-                         - Sqrt(weight_grad1)) * inv_alpha;
-        Vec<N> sigma2 = (Sqrt(weight_grad2 + grad_sq2)
-                         - Sqrt(weight_grad2)) * inv_alpha;
+        const Vec<N> grad1 = pgv * weight2;
+        const Vec<N> grad2 = pgv * weight1;
+        const Vec<N> grad_sq1 = grad1 * grad1;
+        const Vec<N> grad_sq2 = grad2 * grad2;
+        const Vec<N> sigma1 = (Sqrt(weight_grad1 + grad_sq1)
+                               - Sqrt(weight_grad1)) * inv_alpha;
+        const Vec<N> sigma2 = (Sqrt(weight_grad2 + grad_sq2)
+                               - Sqrt(weight_grad2)) * inv_alpha;
         z_val1 = NegMulAdd(sigma1, weight1, z_val1 + grad1);
         z_val2 = NegMulAdd(sigma2, weight2, z_val2 + grad2);
         z_val1.Store(z1);
@@ -276,12 +286,12 @@ void LatentFtrlAt(const std::vector<Term>& terms,
         weight_grad2.Store(wg2);
         // Update w. Where |z| is inside the l1 band the weight is driven to
         // zero, so the branch becomes a select over the whole vector.
-        Vec<N> numerator1 = CopySign(l1, z_val1) - z_val1;
-        Vec<N> numerator2 = CopySign(l1, z_val2) - z_val2;
-        Vec<N> denominator1 = MulAdd(beta + Sqrt(weight_grad1),
-                                     inv_alpha, l2);
-        Vec<N> denominator2 = MulAdd(beta + Sqrt(weight_grad2),
-                                     inv_alpha, l2);
+        const Vec<N> numerator1 = CopySign(l1, z_val1) - z_val1;
+        const Vec<N> numerator2 = CopySign(l1, z_val2) - z_val2;
+        const Vec<N> denominator1 = MulAdd(beta + Sqrt(weight_grad1),
+                                           inv_alpha, l2);
+        const Vec<N> denominator2 = MulAdd(beta + Sqrt(weight_grad2),
+                                           inv_alpha, l2);
         IfThenZeroElse(Abs(z_val1) <= l1,
                        numerator1 / denominator1).Store(w1);
         IfThenZeroElse(Abs(z_val2) <= l1,
@@ -291,72 +301,82 @@ void LatentFtrlAt(const std::vector<Term>& terms,
   }
 }
 
-// Each of the four above under a compile-time plane length, so that the call
-// sites stay a choice of width and nothing else. See AK on LatentScoreAt()
-// for why the length is worth compiling in.
+// Each of the four above under a compile-time plane length and a compile-time
+// answer to UnitPairs(), so that the call sites stay a choice of width and
+// nothing else. See AK on LatentScoreAt() for why the length is worth
+// compiling in.
+template <typename Body>
+auto Dispatch(index_t aligned_k, bool unit, Body body)
+    -> decltype(body(std::integral_constant<int, 0>(),
+                     std::bool_constant<false>())) {
+  if (aligned_k == 8) {
+    if (unit) return body(std::integral_constant<int, 8>(),
+                          std::bool_constant<true>());
+    return body(std::integral_constant<int, 8>(), std::bool_constant<false>());
+  }
+  if (aligned_k == 4) {
+    if (unit) return body(std::integral_constant<int, 4>(),
+                          std::bool_constant<true>());
+    return body(std::integral_constant<int, 4>(), std::bool_constant<false>());
+  }
+  if (unit) return body(std::integral_constant<int, 0>(),
+                        std::bool_constant<true>());
+  return body(std::integral_constant<int, 0>(), std::bool_constant<false>());
+}
+
 template <int N>
 real_t LatentScore(const std::vector<Term>& terms,
                    index_t aligned_k,
+                   bool unit,
                    real_t norm) {
-  if (aligned_k == 8) return LatentScoreAt<N, 8>(terms, aligned_k, norm);
-  if (aligned_k == 4) return LatentScoreAt<N, 4>(terms, aligned_k, norm);
-  return LatentScoreAt<N, 0>(terms, aligned_k, norm);
+  return Dispatch(aligned_k, unit, [&](auto ak, auto is_unit) {
+    return LatentScoreAt<N, ak.value, is_unit.value>(terms, aligned_k, norm);
+  });
 }
 
 template <int N>
 void LatentSgd(const std::vector<Term>& terms,
                index_t aligned_k,
+               bool unit,
                real_t pg,
                real_t norm,
                real_t learning_rate,
                real_t regu_lambda) {
-  if (aligned_k == 8) {
-    LatentSgdAt<N, 8>(terms, aligned_k, pg, norm, learning_rate, regu_lambda);
-  } else if (aligned_k == 4) {
-    LatentSgdAt<N, 4>(terms, aligned_k, pg, norm, learning_rate, regu_lambda);
-  } else {
-    LatentSgdAt<N, 0>(terms, aligned_k, pg, norm, learning_rate, regu_lambda);
-  }
+  Dispatch(aligned_k, unit, [&](auto ak, auto is_unit) {
+    LatentSgdAt<N, ak.value, is_unit.value>(terms, aligned_k, pg, norm,
+                                            learning_rate, regu_lambda);
+  });
 }
 
 template <int N>
 void LatentAdagrad(const std::vector<Term>& terms,
                    index_t aligned_k,
+                   bool unit,
                    real_t pg,
                    real_t norm,
                    real_t learning_rate,
                    real_t regu_lambda) {
-  if (aligned_k == 8) {
-    LatentAdagradAt<N, 8>(terms, aligned_k, pg, norm,
-                          learning_rate, regu_lambda);
-  } else if (aligned_k == 4) {
-    LatentAdagradAt<N, 4>(terms, aligned_k, pg, norm,
-                          learning_rate, regu_lambda);
-  } else {
-    LatentAdagradAt<N, 0>(terms, aligned_k, pg, norm,
-                          learning_rate, regu_lambda);
-  }
+  Dispatch(aligned_k, unit, [&](auto ak, auto is_unit) {
+    LatentAdagradAt<N, ak.value, is_unit.value>(terms, aligned_k, pg, norm,
+                                                learning_rate, regu_lambda);
+  });
 }
 
 template <int N>
 void LatentFtrl(const std::vector<Term>& terms,
                 index_t aligned_k,
+                bool unit,
                 real_t pg,
                 real_t norm,
                 real_t inv_alpha_val,
                 real_t beta_val,
                 real_t lambda_1_val,
                 real_t lambda_2_val) {
-  if (aligned_k == 8) {
-    LatentFtrlAt<N, 8>(terms, aligned_k, pg, norm,
-                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
-  } else if (aligned_k == 4) {
-    LatentFtrlAt<N, 4>(terms, aligned_k, pg, norm,
-                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
-  } else {
-    LatentFtrlAt<N, 0>(terms, aligned_k, pg, norm,
-                       inv_alpha_val, beta_val, lambda_1_val, lambda_2_val);
-  }
+  Dispatch(aligned_k, unit, [&](auto ak, auto is_unit) {
+    LatentFtrlAt<N, ak.value, is_unit.value>(terms, aligned_k, pg, norm,
+                                             inv_alpha_val, beta_val,
+                                             lambda_1_val, lambda_2_val);
+  });
 }
 
 } // namespace
@@ -388,9 +408,10 @@ real_t FFMScore::CalcScore(RowRef row,
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
   const std::vector<Term>& terms = RowTerms(row, model, aux_size * aligned_k);
+  const bool unit = UnitPairs(row, norm);
   real_t sum_v = WideLanes(aligned_k)
-                     ? LatentScore<8>(terms, aligned_k, norm)
-                     : LatentScore<4>(terms, aligned_k, norm);
+                     ? LatentScore<8>(terms, aligned_k, unit, norm)
+                     : LatentScore<4>(terms, aligned_k, unit, norm);
 
   return sum_v + sum_w;
 }
@@ -456,10 +477,13 @@ void FFMScore::calc_grad_sgd(RowRef row,
    *  latent factor                                        *
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
+  const bool unit = UnitPairs(row, norm);
   if (WideLanes(aligned_k)) {
-    LatentSgd<8>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
+    LatentSgd<8>(terms, aligned_k, unit, pg, norm,
+                 learning_rate_, regu_lambda_);
   } else {
-    LatentSgd<4>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
+    LatentSgd<4>(terms, aligned_k, unit, pg, norm,
+                 learning_rate_, regu_lambda_);
   }
 }
 
@@ -477,10 +501,13 @@ void FFMScore::calc_grad_adagrad(RowRef row,
    *  latent factor                                        *
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
+  const bool unit = UnitPairs(row, norm);
   if (WideLanes(aligned_k)) {
-    LatentAdagrad<8>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
+    LatentAdagrad<8>(terms, aligned_k, unit, pg, norm,
+                     learning_rate_, regu_lambda_);
   } else {
-    LatentAdagrad<4>(terms, aligned_k, pg, norm, learning_rate_, regu_lambda_);
+    LatentAdagrad<4>(terms, aligned_k, unit, pg, norm,
+                     learning_rate_, regu_lambda_);
   }
 }
 
@@ -498,11 +525,12 @@ void FFMScore::calc_grad_ftrl(RowRef row,
    *  latent factor                                        *
    *********************************************************/
   index_t aligned_k = model.get_aligned_k();
+  const bool unit = UnitPairs(row, norm);
   if (WideLanes(aligned_k)) {
-    LatentFtrl<8>(terms, aligned_k, pg, norm,
+    LatentFtrl<8>(terms, aligned_k, unit, pg, norm,
                   inv_alpha_, beta_, lambda_1_, lambda_2_);
   } else {
-    LatentFtrl<4>(terms, aligned_k, pg, norm,
+    LatentFtrl<4>(terms, aligned_k, unit, pg, norm,
                   inv_alpha_, beta_, lambda_1_, lambda_2_);
   }
 }

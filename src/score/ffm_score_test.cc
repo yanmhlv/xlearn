@@ -318,4 +318,86 @@ TEST(FFMScore_Test, step_matches_split_path) {
   }
 }
 
+namespace {
+
+RowRef UnitRowOf(const RowBuffer& buf) {
+  RowRef row = buf;
+  row.vals = nullptr;
+  return row;
+}
+
+} // namespace
+
+TEST(FFMScore_Test, unit_row_scores_bit_for_bit_with_the_general_path) {
+  const index_t kNumFeat = 6;
+  const index_t kNumField = 3;
+  for (index_t k = 1; k < 40; ++k) {
+    Model model;
+    model.Initialize("ffm", "squared", kNumFeat, kNumField, k, 3);
+    oracle::FillDistinct(model, k);
+    oracle::ZeroLatentPadding(model);
+    oracle::Row row = oracle::MakeRow(kNumFeat, kNumField, k + 7000);
+    for (oracle::Node& n : row.nodes) n.val = 1.0;
+    RowBuffer buf = row.Buffer();
+
+    FFMScore score;
+    const real_t stored = score.CalcScore(buf, model, 1.0);
+    const real_t implied = score.CalcScore(UnitRowOf(buf), model, 1.0);
+    EXPECT_EQ(stored, implied) << "k=" << k;
+  }
+}
+
+TEST(FFMScore_Test, unit_row_updates_bit_for_bit_with_the_general_path) {
+  const index_t kNumFeat = 6;
+  const index_t kNumField = 3;
+  constexpr const char* kOptimizers[] = {"sgd", "adagrad", "ftrl"};
+  for (const char* opt : kOptimizers) {
+    for (index_t k = 1; k < 24; ++k) {
+      Model stored;
+      Model implied;
+      stored.Initialize("ffm", "squared", kNumFeat, kNumField, k, 3);
+      implied.Initialize("ffm", "squared", kNumFeat, kNumField, k, 3);
+      oracle::FillDistinct(stored, k);
+      oracle::FillDistinct(implied, k);
+      oracle::Row row = oracle::MakeRow(kNumFeat, kNumField, k + 9000);
+      for (oracle::Node& n : row.nodes) n.val = 1.0;
+      RowBuffer buf = row.Buffer();
+
+      FFMScore score;
+      std::string opt_type(opt);
+      score.Initialize(0.1, 0.02, 0.3, 1.0, 0.001, 0.002, opt_type);
+      score.CalcGrad(buf, stored, 0.3, 1.0);
+      score.CalcGrad(UnitRowOf(buf), implied, 0.3, 1.0);
+
+      const real_t* const vs = stored.GetParameter_v();
+      const real_t* const vi = implied.GetParameter_v();
+      for (index_t i = 0; i < stored.GetNumParameter_v(); ++i) {
+        ASSERT_EQ(vs[i], vi[i]) << opt << " latent " << i << " k=" << k;
+      }
+    }
+  }
+}
+
+TEST(FFMScore_Test, a_scaled_or_valued_row_is_not_unit) {
+  const index_t kNumFeat = 6;
+  const index_t kNumField = 3;
+  const index_t kK = 8;
+  Model model;
+  model.Initialize("ffm", "squared", kNumFeat, kNumField, kK, 3);
+  oracle::FillDistinct(model, kK);
+  oracle::ZeroLatentPadding(model);
+  oracle::Row row = oracle::MakeRow(kNumFeat, kNumField, 4242);
+  for (oracle::Node& n : row.nodes) n.val = 1.0;
+  RowBuffer unit_buf = row.Buffer();
+
+  oracle::Row valued = row;
+  valued.nodes[1].val = 2.0;
+  RowBuffer valued_buf = valued.Buffer();
+
+  FFMScore score;
+  const real_t as_unit = score.CalcScore(UnitRowOf(unit_buf), model, 1.0);
+  EXPECT_NE(as_unit, score.CalcScore(valued_buf, model, 1.0));
+  EXPECT_NE(as_unit, score.CalcScore(unit_buf, model, 0.5));
+}
+
 } // namespace xLearn

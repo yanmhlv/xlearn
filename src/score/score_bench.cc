@@ -33,15 +33,15 @@ This file benchmarks the SIMD kernels of the FMScore and FFMScore classes.
 namespace xLearn {
 namespace {
 
-const real_t kLearningRate = 0.2;
-const real_t kReguLambda = 0.00002;
-const real_t kAlpha = 0.3;
-const real_t kBeta = 1.0;
-const real_t kLambda1 = 0.00001;
-const real_t kLambda2 = 0.00002;
-const real_t kModelScale = 0.66;
+constexpr real_t kLearningRate = 0.2;
+constexpr real_t kReguLambda = 0.00002;
+constexpr real_t kAlpha = 0.3;
+constexpr real_t kBeta = 1.0;
+constexpr real_t kLambda1 = 0.00001;
+constexpr real_t kLambda2 = 0.00002;
+constexpr real_t kModelScale = 0.66;
 // A plausible mid-training partial gradient.
-const real_t kPartialGrad = 0.15;
+constexpr real_t kPartialGrad = 0.15;
 
 struct Config {
   const char* kind;
@@ -52,6 +52,7 @@ struct Config {
   index_t num_nnz;
   // A power of two, so the row cursor can wrap with a mask.
   index_t num_rows;
+  bool valued;
   const char* suffix;
 };
 
@@ -80,7 +81,8 @@ Workload& GetWorkload(const Config& cfg) {
   std::string key = std::string(cfg.kind) + "/" + cfg.opt_type + "/" +
                     std::to_string(cfg.num_K) + "/" +
                     std::to_string(cfg.num_feat) + "/" +
-                    std::to_string(cfg.num_rows);
+                    std::to_string(cfg.num_rows) + "/" +
+                    (cfg.valued ? "valued" : "unit");
   std::unique_ptr<Workload>& slot = cache[key];
   if (slot != nullptr) {
     return *slot;
@@ -97,7 +99,8 @@ Workload& GetWorkload(const Config& cfg) {
     slot->matrix.AddRow();
     for (index_t i = 0; i < cfg.num_nnz; ++i) {
       seed = seed * 1103515245 + 12345;
-      slot->matrix.AddNode(r, (seed >> 8) % cfg.num_feat, 1.0,
+      const real_t val = cfg.valued ? 0.3651 : 1.0;
+      slot->matrix.AddNode(r, (seed >> 8) % cfg.num_feat, val,
                            i % cfg.num_field);
     }
   }
@@ -164,20 +167,24 @@ void Register(const Config& cfg) {
 // feature space far larger than the cache, which is the regime a real
 // training run sits in and where memory latency, not SIMD, dominates.
 const Config kConfigs[] = {
-  {"fm",  "sgd",      4,   10000,  1, 30,  1024, ""},
-  {"fm",  "sgd",     16,   10000,  1, 30,  1024, ""},
-  {"fm",  "sgd",     64,   10000,  1, 30,  1024, ""},
-  {"fm",  "adagrad", 16,   10000,  1, 30,  1024, ""},
-  {"fm",  "ftrl",    16,   10000,  1, 30,  1024, ""},
-  {"fm",  "sgd",     16, 1000000,  1, 30, 16384, "/oom-cache"},
-  {"ffm", "sgd",      4,    2000, 20, 20,  1024, ""},
-  {"ffm", "sgd",      8,    2000, 20, 20,  1024, ""},
-  {"ffm", "sgd",     16,    2000, 20, 20,  1024, ""},
-  {"ffm", "adagrad",  4,    2000, 20, 20,  1024, ""},
-  {"ffm", "adagrad", 16,    2000, 20, 20,  1024, ""},
-  {"ffm", "ftrl",     4,    2000, 20, 20,  1024, ""},
-  {"ffm", "ftrl",    16,    2000, 20, 20,  1024, ""},
-  {"ffm", "sgd",      4,  200000, 20, 20,  4096, "/oom-cache"},
+  {"fm",  "sgd",      4,   10000,  1, 30,  1024, false, ""},
+  {"fm",  "sgd",     16,   10000,  1, 30,  1024, false, ""},
+  {"fm",  "sgd",     64,   10000,  1, 30,  1024, false, ""},
+  {"fm",  "adagrad", 16,   10000,  1, 30,  1024, false, ""},
+  {"fm",  "ftrl",    16,   10000,  1, 30,  1024, false, ""},
+  {"fm",  "sgd",     16, 1000000,  1, 30, 16384, false, "/oom-cache"},
+  {"ffm", "sgd",      4,    2000, 20, 20,  1024, false, ""},
+  {"ffm", "sgd",      8,    2000, 20, 20,  1024, false, ""},
+  {"ffm", "sgd",     16,    2000, 20, 20,  1024, false, ""},
+  {"ffm", "adagrad",  4,    2000, 20, 20,  1024, false, ""},
+  {"ffm", "adagrad", 16,    2000, 20, 20,  1024, false, ""},
+  {"ffm", "ftrl",     4,    2000, 20, 20,  1024, false, ""},
+  {"ffm", "ftrl",    16,    2000, 20, 20,  1024, false, ""},
+  {"ffm", "sgd",      4,  200000, 20, 20,  4096, false, "/oom-cache"},
+  {"ffm", "sgd",      4,    2000, 20, 20,  1024, true, "/valued"},
+  {"ffm", "sgd",      8,    2000, 20, 20,  1024, true, "/valued"},
+  {"ffm", "adagrad", 16,    2000, 20, 20,  1024, true, "/valued"},
+  {"ffm", "ftrl",     4,    2000, 20, 20,  1024, true, "/valued"},
 };
 
 } // namespace

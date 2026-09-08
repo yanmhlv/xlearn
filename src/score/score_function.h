@@ -183,18 +183,17 @@ class Score {
   // another as far as the compiler can prove, so the store to z forces a
   // reload and a second square root of a sum the line above already has.
   void ftrl_update(real_t* p, real_t g) {
-    real_t weight = p[0];
-    real_t sqrt_old_n = std::sqrt(p[1]);
-    real_t n = p[1] + g * g;
-    real_t sqrt_n = std::sqrt(n);
-    real_t sigma = (sqrt_n - sqrt_old_n) * inv_alpha_;
-    real_t z = p[2] + (g - sigma * weight);
+    const real_t weight = p[0];
+    const real_t sqrt_old_n = std::sqrt(p[1]);
+    const real_t n = p[1] + g * g;
+    const real_t sqrt_n = std::sqrt(n);
+    const real_t sigma = (sqrt_n - sqrt_old_n) * inv_alpha_;
+    const real_t z = p[2] + (g - sigma * weight);
     // Both arms, then a select. Which way z falls is a coin toss the branch
     // predictor cannot learn, and the mispredict costs more than the divide
     // it was there to skip.
-    real_t sign = std::copysign(1.0f, z);
-    real_t weight_next = (sign * lambda_1_ - z) /
-                         ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
+    const real_t weight_next = (std::copysign(lambda_1_, z) - z) /
+                               ((beta_ + sqrt_n) * inv_alpha_ + lambda_2_);
     p[0] = std::fabs(z) <= lambda_1_ ? 0.0f : weight_next;
     p[1] = n;
     p[2] = z;
